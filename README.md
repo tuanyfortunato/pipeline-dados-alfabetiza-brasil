@@ -76,7 +76,9 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 │   │   └── ingestao_batch_bigquery.py
 │   ├── 02_silver/                   # em desenvolvimento
 │   └── 03_gold/                     # em desenvolvimento
-├── notebooks/                       # exploração
+├── notebooks/
+│   ├── exploracao_bronze.ipynb      # EDA da Bronze (perfil, nulos, corte 743, chaves)
+│   └── laboratorio_silver.ipynb     # prototipagem das transformações da Silver
 ├── data/                            # data lake local (gerado na execução, fora do Git)
 └── logs/                            # relatórios de qualidade (gerados na execução)
 ```
@@ -135,7 +137,9 @@ No final você vai ter os Parquet em `data/bronze/batch/<entidade>/` e um relat�
 
 Se um check crítico falhar (base vazia, coluna obrigatória faltando), o script para com `DataQualityError`. Isso é proposital: dado ruim não segue adiante em silêncio.
 
-5. Silver e Gold: em desenvolvimento - esta seção cresce junto com o código.
+5. (Opcional) Explore os dados ingeridos no notebook `notebooks/exploracao_bronze.ipynb` - ele documenta o perfil das entidades, a distribuição da proficiência e as descobertas que orientaram o desenho da Silver. O notebook está versionado já executado, então dá para ler os resultados direto no GitHub.
+
+6. Silver e Gold: em desenvolvimento - esta seção cresce junto com o código.
 
 ## ✅ Qualidade de dados
 
@@ -146,7 +150,11 @@ Os checks (em `src/utils/data_quality.py`) cobrem as quatro dimensões clássica
 - **Consistência** - os campos fazem sentido entre si? (ex.: todo `id_municipio` dos alunos existe na dimensão município)
 - **Unicidade** - sem duplicatas indevidas nas chaves
 
+Além das quatro dimensões, o módulo valida formato (regex nos códigos IBGE), consistência linha a linha entre campos (ex.: aluno ausente não pode ter nota) e completude contra threshold. Cada check tem um de três desfechos: **pass**, **warning** (fica registrado, não derruba o pipeline - caso dos raros presentes sem nota) ou **fail** (aborta a execução).
+
 Toda execução gera um relatório JSON em `logs/` com o score. Na Silver entra também a estratégia de quarentena: registro reprovado é separado para análise em vez de descartado (ou de travar a esteira inteira).
+
+Por que não usei Great Expectations ou Soda? Para o volume e o número de regras deste projeto, um módulo próprio de ~100 linhas cobre as mesmas dimensões sem adicionar dependência pesada - e me obrigou a entender cada validação em vez de configurar YAML. Num cenário corporativo com dezenas de fontes, migrar para uma dessas ferramentas seria o caminho natural.
 
 ## 🛠️ Tecnologias
 
@@ -168,7 +176,11 @@ Algumas escolhas que fiz e o raciocínio por trás delas:
 
 **pandas ou Spark?** Os dois. pandas resolve a ingestão com muito menos setup; o Spark entra onde realmente agrega - joins distribuídos entre as entidades, streaming estruturado e folga para o volume crescer.
 
-**Batch e streaming separados desde a Bronze** (`bronze/batch/` e `bronze/streaming/`), para manter a rastreabilidade da origem e permitir reprocessar um lado sem tocar no outro.
+**Batch, streaming ou os dois?** Os dois, porque resolvem coisas diferentes. As cargas históricas do INEP - microdados, metas, municípios - são grandes e mudam poucas vezes por ano; aí batch é o natural, roda de tempos em tempos e processa o lote inteiro de uma vez. Já a chegada de novas medições ou revisões de meta é onde compensa reagir rápido, e é onde entra o streaming (simulado com eventos JSON caindo numa pasta landing). Deixei os dois separados desde a Bronze (`bronze/batch/` e `bronze/streaming/`) para não misturar a origem e poder reprocessar um lado sem encostar no outro. Se fosse só batch, perderia o "quase tempo real" que o problema pede; se fosse só streaming, pagaria complexidade à toa nas cargas que são naturalmente periódicas.
+
+**Data lake ou data warehouse?** Cheguei a considerar jogar tudo num data warehouse (Redshift, ou o próprio BigQuery que já é a fonte) e resolver no SQL. Fiquei com data lake em S3 por dois motivos: os microdados de aluno já são 3,87 milhões de linhas e crescem a cada nova onda da pesquisa - storage barato em Parquet pesa mais que a conveniência do SQL - e o formato colunar aberto não me prende a um fornecedor: hoje leio com Spark, amanhã com Athena, DuckDB ou o que vier. O warehouse não sai de cena, só troca de lado: as tabelas Gold ficam expostas via Athena, que me dá a experiência de warehouse (SQL, catálogo, BI) sem manter cluster nenhum ligado. Na prática, lake para armazenar e refinar, "warehouse" serverless só na ponta do consumo.
+
+**Custo ou performance?** Nesse volume dá para ter os dois, então otimizei custo sem sacrificar tempo de resposta perceptível. Parquet particionado faz a consulta ler só a fatia que interessa (menos byte escaneado = menos conta no Athena e menos espera), a Bronze é materializada uma vez e todo o resto parte dela em vez de bater na fonte de novo, e nada fica ligado 24/7 - desenvolvimento local e, na nuvem, S3 e Athena são serverless. Se um dia a base crescer a ponto de a performance apertar, o caminho é subir um cluster Spark (Glue/EMR) sob demanda: aí sim pago mais em troca de paralelismo, mas como escolha consciente para quando o volume justificar, não como padrão.
 
 ## 📡 Monitoramento
 
