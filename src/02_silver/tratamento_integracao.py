@@ -38,6 +38,7 @@ logger = get_logger("silver.tratamento_integracao")
 
 LAKE_PATH = os.environ.get("LAKE_PATH", "./data")
 BRONZE = Path(LAKE_PATH) / "bronze" / "batch"
+BRONZE_STREAMING = Path(LAKE_PATH) / "bronze" / "streaming" / "eventos_indicador"
 SILVER = Path(LAKE_PATH) / "silver"
 
 # Os dois primeiros dígitos do código IBGE do município são o código da UF.
@@ -152,6 +153,36 @@ def tratar_metas(brasil: pd.DataFrame, por_uf: pd.DataFrame,
     return metas
 
 
+def integrar_eventos_streaming(municipio: pd.DataFrame) -> None:
+    """Integra os eventos de streaming (opcional): limpa, deriva UF, valida contra
+    a dimensão municipio batch e materializa em silver/eventos_indicador.
+
+    É a junção do streaming com as bases batch. Só roda se houver eventos — sem
+    eles, o fluxo batch segue igual."""
+    if not BRONZE_STREAMING.exists():
+        logger.info("sem eventos de streaming em %s; integração ignorada", BRONZE_STREAMING)
+        return
+
+    eventos = pd.read_parquet(BRONZE_STREAMING)
+    _para_inteiro(eventos, ["id_municipio"])
+    eventos["ano"] = pd.to_numeric(eventos["ano"]).astype(int)
+    _para_decimal(eventos, ["proficiencia_media"])
+    # UF derivada do código IBGE, mesma regra dos alunos — casa os eventos no batch
+    eventos["sigla_uf"] = (eventos["id_municipio"] // 100000).map(UF_POR_CODIGO)
+    eventos["origem"] = "streaming"
+
+    checks = [
+        check_not_null(eventos, "eventos_indicador", ["id_municipio", "ano"]),
+        check_range(eventos, "eventos_indicador", "proficiencia_media", 0, 1000),
+        check_referential_integrity(eventos, "eventos_indicador", "id_municipio",
+                                    municipio, "id_municipio"),
+    ]
+    report_path = save_report(checks, layer="silver_streaming")
+    escrever_particionado(eventos, SILVER / "eventos_indicador", "ano")
+    logger.info("Eventos de streaming integrados: %d linhas. DQ: %s", len(eventos), report_path)
+    fail_if_critical(checks)
+
+
 def rodar_dq(alunos: pd.DataFrame, municipio: pd.DataFrame) -> list[dict]:
     """Suite de qualidade da Silver, rodada sobre os alunos já sem quarentena."""
     com_nota = alunos[alunos["presente"] & ~alunos["sem_nota"]]
@@ -216,6 +247,9 @@ def main() -> None:
     logger.info("Silver concluída: %d alunos, %d em quarentena, %d resultados municipais, "
                 "%d resultados por UF, %d linhas de metas.",
                 len(alunos_limpos), len(quarentena), len(municipio), len(uf), len(metas))
+
+    # Integração do streaming (opcional, não quebra o batch se não houver eventos)
+    integrar_eventos_streaming(municipio)
 
 
 if __name__ == "__main__":
