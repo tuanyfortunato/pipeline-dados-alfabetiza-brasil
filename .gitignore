@@ -1,0 +1,24 @@
+# Credenciais GCP - NUNCA versionar
+credentials/
+*.json
+!docs/**/*.json
+
+# Ambiente Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Dados e logs locais (não versionar dados brutos, só código)
+data/
+logs/*.json
+*.parquet
+*.csv
+
+# Notebooks - checkpoints
+.ipynb_checkpoints/
+
+# SO / IDE
+.DS_Store
+.vscode/
+docs/teste/*
