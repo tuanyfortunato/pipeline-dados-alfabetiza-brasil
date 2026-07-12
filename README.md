@@ -43,7 +43,7 @@ O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo ref
 
 **🥉 Bronze** - cópia fiel da fonte, sem nenhum filtro de negócio. Salvo em Parquet com três colunas extras de rastreabilidade: `_ingestion_ts` (quando foi ingerido), `_source` (tabela de origem) e `_row_hash` (identificador do conteúdo da linha, útil para detectar mudanças). A tabela `alunos` fica particionada por ano (`ano=2023/`, `ano=2024/`), então quem consulta um ano só não paga o custo de ler os outros.
 
-**🥈 Silver** - limpeza e integração: tratamento de nulos, deduplicação, conversão de tipos (proficiência vira decimal, códigos IBGE viram inteiro), padronização de texto e os joins entre as 6 entidades. É aqui que rodam as validações formais de qualidade.
+**🥈 Silver** - limpeza e integração: conversão de tipos (proficiência vira decimal, códigos IBGE viram inteiro), decodificação dos códigos pelo dicionário da fonte, padronização do vocabulário de rede (um rótulo só, do resultado à meta), flags de ausência (`presente`, `sem_nota`), derivação da UF a partir do código do município e o empilhamento das metas numa estrutura única. É aqui que roda a suite formal de qualidade - e onde entra a **quarentena**: registro que reprova (ex.: município órfão da dimensão) é separado em `silver/quarentena/` com o motivo, em vez de sumir num filtro ou derrubar a esteira.
 
 **🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`) e tabelas prontas para consumo: indicador por município, meta × resultado e evolução temporal.
 
@@ -54,9 +54,9 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 | Etapa | Situação |
 |---|---|
 | Ingestão batch → Bronze | ✅ pronto |
-| Data quality com relatório | ✅ pronto (básico na Bronze, suite completa vem com a Silver) |
+| Silver (limpeza + integração) | ✅ pronto |
+| Data quality com relatório | ✅ pronto (básico na Bronze, suite completa na Silver) |
 | Streaming | 🚧 em desenvolvimento |
-| Silver | 🚧 em desenvolvimento |
 | Gold | 🚧 em desenvolvimento |
 | Promoção do lake para o S3 | 📋 planejado |
 
@@ -74,7 +74,8 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 │   │   └── data_quality.py          # checks de qualidade reutilizáveis
 │   ├── 01_bronze/
 │   │   └── ingestao_batch_bigquery.py
-│   ├── 02_silver/                   # em desenvolvimento
+│   ├── 02_silver/
+│   │   └── tratamento_integracao.py # limpeza, padronização e integração das entidades
 │   └── 03_gold/                     # em desenvolvimento
 ├── notebooks/
 │   ├── exploracao_bronze.ipynb      # EDA da Bronze (perfil, nulos, corte 743, chaves)
@@ -137,9 +138,17 @@ No final você vai ter os Parquet em `data/bronze/batch/<entidade>/` e um relat�
 
 Se um check crítico falhar (base vazia, coluna obrigatória faltando), o script para com `DataQualityError`. Isso é proposital: dado ruim não segue adiante em silêncio.
 
-5. (Opcional) Explore os dados ingeridos no notebook `notebooks/exploracao_bronze.ipynb` - ele documenta o perfil das entidades, a distribuição da proficiência e as descobertas que orientaram o desenho da Silver. O notebook está versionado já executado, então dá para ler os resultados direto no GitHub.
+5. Rode o tratamento da Silver:
 
-6. Silver e Gold: em desenvolvimento - esta seção cresce junto com o código.
+```powershell
+python src/02_silver/tratamento_integracao.py
+```
+
+Ele lê a Bronze e grava a camada tratada em `data/silver/` - `alunos/` (particionado por ano), `quarentena/alunos/`, `resultados/municipio` e `resultados/uf`, e `metas/` (as três tabelas empilhadas). No fim sai um relatório em `logs/dq_silver_<timestamp>.json`. Na base atual são 3,87 mi de alunos tratados, 410 linhas em quarentena e score de qualidade de ~91% (o único ponto de atenção fica como *warning*, não derruba o pipeline).
+
+6. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves) e `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois. Ambos estão versionados já executados, dá para ler direto no GitHub.
+
+7. Gold: em desenvolvimento - esta seção cresce junto com o código.
 
 ## ✅ Qualidade de dados
 
@@ -158,10 +167,10 @@ Por que não usei Great Expectations ou Soda? Para o volume e o número de regra
 
 ## 🛠️ Tecnologias
 
-- **Python + pandas** na ingestão - o volume atual (268 MB) cabe tranquilo em memória, então preferi a simplicidade
+- **Python + pandas** na ingestão e nas transformações Bronze e Silver - o volume atual (268 MB, 3,87 mi de linhas) cabe tranquilo em memória, então preferi a simplicidade
 - **google-cloud-bigquery** para extração direto da fonte, sem download manual de arquivo
 - **Parquet** em todas as camadas - colunar, comprimido e com tipagem forte
-- **PySpark** nas transformações Silver/Gold e no streaming (próximas fases)
+- **PySpark** reservado para o streaming e para quando o volume exigir escala distribuída (próximas fases)
 - **AWS S3 + Athena** como destino do data lake na nuvem (promoção planejada)
 
 ## ⚖️ Decisões arquiteturais
@@ -174,7 +183,7 @@ Algumas escolhas que fiz e o raciocínio por trás delas:
 
 **Cadê a camada raw?** Algumas arquiteturas separam raw (formato original) de Bronze (Parquet + metadados). Como a minha fonte é um warehouse, não existe um "arquivo original" para preservar - a Bronze já nasce sendo a cópia fiel, sem filtro de negócio. No streaming a história é outra: lá a pasta `landing/` guarda o JSON exatamente como chegou, fazendo o papel de raw.
 
-**pandas ou Spark?** Os dois. pandas resolve a ingestão com muito menos setup; o Spark entra onde realmente agrega - joins distribuídos entre as entidades, streaming estruturado e folga para o volume crescer.
+**pandas ou Spark?** Os dois, cada um no seu lugar. O volume atual (268 MB, 3,87 mi de linhas) cabe em memória com folga, então Bronze e Silver rodam em pandas - menos setup e iteração bem mais rápida, inclusive nos joins entre as entidades. O Spark fica reservado para onde realmente agrega: o streaming estruturado e o dia em que o volume crescer a ponto de exigir processamento distribuído. A regra que me guia é que trocar de ferramenta não pode mudar o resultado - então, quando a migração vier, ela parte dos números que a Silver em pandas já validou.
 
 **Batch, streaming ou os dois?** Os dois, porque resolvem coisas diferentes. As cargas históricas do INEP - microdados, metas, municípios - são grandes e mudam poucas vezes por ano; aí batch é o natural, roda de tempos em tempos e processa o lote inteiro de uma vez. Já a chegada de novas medições ou revisões de meta é onde compensa reagir rápido, e é onde entra o streaming (simulado com eventos JSON caindo numa pasta landing). Deixei os dois separados desde a Bronze (`bronze/batch/` e `bronze/streaming/`) para não misturar a origem e poder reprocessar um lado sem encostar no outro. Se fosse só batch, perderia o "quase tempo real" que o problema pede; se fosse só streaming, pagaria complexidade à toa nas cargas que são naturalmente periódicas.
 
