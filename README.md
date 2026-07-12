@@ -57,8 +57,11 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 | Silver (limpeza + integração) | ✅ pronto |
 | Gold (métricas de negócio) | ✅ pronto |
 | Data quality com relatório | ✅ pronto (em todas as camadas) |
-| Streaming (producer + consumer Spark) | ✅ pronto |
-| Promoção do lake para o S3 | 📋 planejado |
+| Streaming local (producer + consumer Spark de pasta) | ✅ pronto |
+| Infra AWS como código (S3 + Glue catálogo + Athena) | ✅ pronto (Terraform) |
+| Código cloud-ready (`lake_path`, credencial via Secrets Manager) | ✅ pronto |
+| Batch na AWS (3 Glue jobs + Step Functions + EventBridge) | ✅ pronto (Terraform) |
+| Streaming na AWS (Kinesis + Glue Streaming) | ✅ pronto (Terraform) |
 
 ## 📂 Estrutura do repositório
 
@@ -193,6 +196,46 @@ Por padrão ele processa o que estiver na landing e encerra - mais fácil de dem
 
 3. Rode a **Silver de novo**. Ela detecta os eventos em `bronze/streaming/`, valida contra a dimensão de municípios e junta na camada tratada, em `silver/eventos_indicador/`. Se não houver streaming nenhum, a Silver roda igual à do batch - a integração é opcional e não trava a esteira. É aqui que o streaming e as bases batch de fato se encontram.
 
+## Rodar na AWS
+
+Todo o pipeline também roda **dentro da AWS**, provisionado como código em `terraform/`. O ambiente é um Learner Lab da AWS Academy (região fixa `us-east-1`, credencial temporária, tudo assume a `LabRole`) - o contexto e as decisões estão em `terraform/README.md`.
+
+Ponto de partida (uma vez por sessão do lab):
+
+```powershell
+cd terraform
+terraform init
+terraform apply                 # cria S3, Glue catálogo, Athena, jobs, Step Functions, Kinesis
+cd ..
+./scripts/deploy_glue_artifacts.ps1   # sobe o código (src.zip + wrappers) pro S3
+```
+
+### Batch na AWS (Glue + Step Functions + EventBridge)
+
+Cada camada vira um **Glue Python Shell job** (`alfabetiza-batch-bronze/silver/gold`, pandas puro - a decisão local vale na nuvem), a **Step Functions** encadeia `bronze → silver → gold` (cada passo `.sync`, para na primeira falha) e o **EventBridge** guarda a agenda semanal, criada `DISABLED` de propósito (agenda ativa em conta de lab = job rodando sem ninguém olhando o crédito). Demo:
+
+```powershell
+aws stepfunctions start-execution --state-machine-arn <state_machine_arn do terraform output>
+```
+
+### Streaming na AWS (Kinesis + Glue Streaming)
+
+O mesmo streaming do modo local, agora com fila gerenciada de verdade: o producer publica no **Kinesis Data Stream** `alfabetiza-eventos` e um **Glue Streaming job** (Spark Structured Streaming, `format("kinesis")`) consome e materializa na Bronze do S3 - mesmo schema, mesmos metadados de rastreabilidade, mesmo destino do consumer local de pasta.
+
+```powershell
+# 1. dispara o Glue Streaming job (fica lendo o Kinesis)
+aws glue start-job-run --job-name alfabetiza-streaming-kinesis
+
+# 2. num terminal, o producer publica eventos no stream
+python src/streaming/producer_eventos.py --destino kinesis --lotes 0
+
+# 3. confira o Parquet nascendo em s3://<bucket>/bronze/streaming/eventos_indicador/
+```
+
+> ⚠️ **Custo:** o Glue Streaming cobra por DPU-hora **enquanto roda** (~US$ 0,88/h) e o Kinesis por shard-hora só de existir. O job tem `timeout` de 60 min como rede de segurança, mas a disciplina é rodar a demo cronometrada (~15-30 min) e **parar tudo** no fim com `./scripts/aws_desligar.ps1` (encerra execuções, para os job runs e destrói o stream; o `aws_ligar.ps1` recria via `terraform apply`).
+
+O producer continua local de propósito: ele *simula um sistema externo*, e sistema externo não roda dentro do pipeline - manda eventos pra borda (o Kinesis) via `boto3`. Como alternativa FinOps, se o requisito fosse só aterrissar eventos no lake, um Firehose → S3 faria isso sem código; mantemos o Glue Streaming porque o desafio valoriza o Spark - trade-off consciente.
+
 ## Qualidade de dados
 
 Os checks (em `src/utils/data_quality.py`) cobrem as quatro dimensões clássicas:
@@ -213,8 +256,8 @@ Por que não usei Great Expectations ou Soda? Para o volume e o número de regra
 - **Python + pandas** na ingestão e nas transformações Bronze e Silver - o volume atual (268 MB, 3,87 mi de linhas) cabe tranquilo em memória, então preferi a simplicidade
 - **google-cloud-bigquery** para extração direto da fonte, sem download manual de arquivo
 - **Parquet** em todas as camadas - colunar, comprimido e com tipagem forte
-- **PySpark (Structured Streaming)** no consumer que lê a landing e materializa os eventos na Bronze - e reservado para quando o volume do batch exigir escala distribuída
-- **AWS S3 + Athena** como destino do data lake na nuvem (promoção planejada)
+- **PySpark (Structured Streaming)** no consumer que lê a landing (local) e no Glue Streaming job que lê o Kinesis (nuvem) - e reservado para quando o volume do batch exigir escala distribuída
+- **AWS** (via Terraform) como destino e execução na nuvem: **S3** (data lake), **Glue** (Python Shell no batch, Streaming no Kinesis), **Step Functions + EventBridge** (orquestração e agenda), **Kinesis Data Streams** (fila de eventos), **Athena** (consumo da Gold) e **Secrets Manager** (credencial do BigQuery)
 
 ## Decisões arquiteturais
 
@@ -230,7 +273,7 @@ Algumas escolhas que fiz e o raciocínio por trás delas:
 
 **Batch, streaming ou os dois?** Os dois, porque resolvem coisas diferentes. As cargas históricas do INEP - microdados, metas, municípios - são grandes e mudam poucas vezes por ano; aí batch é o natural, roda de tempos em tempos e processa o lote inteiro de uma vez. Já a chegada de novas medições ou revisões de meta é onde compensa reagir rápido, e é onde entra o streaming (simulado com eventos JSON caindo numa pasta landing). Deixei os dois separados desde a Bronze (`bronze/batch/` e `bronze/streaming/`) para não misturar a origem e poder reprocessar um lado sem encostar no outro. Se fosse só batch, perderia o "quase tempo real" que o problema pede; se fosse só streaming, pagaria complexidade à toa nas cargas que são naturalmente periódicas.
 
-**Fila gerenciada ou arquivos numa pasta?** Streaming de manual pede uma fila - Kafka, Kinesis. Não fui por aí, e o motivo principal é simples: custo. O Kinesis não tem free tier, e a ideia aqui é demonstrar o padrão, não pagar por vazão que não vou usar. Fui de *file streaming*: os eventos caem como JSON numa pasta landing e o Spark Structured Streaming consome essa pasta. Continua sendo streaming legítimo do lado do Spark - schema explícito, micro-batch, checkpoint, capacidade de reprocessar -, e tem um bônus de projeto: na nuvem a landing vira só mais um prefixo no mesmo bucket S3 do lake, e o consumer troca `./data` por `s3a://...` sem mudar mais nada.
+**Fila gerenciada ou arquivos numa pasta?** Streaming de manual pede uma fila - Kafka, Kinesis. No desenvolvimento local não fui por aí, e o motivo era custo: o Kinesis não tem free tier, e a ideia era demonstrar o padrão sem pagar por vazão que não vou usar. Fui de *file streaming*: os eventos caem como JSON numa pasta landing e o Spark Structured Streaming consome essa pasta. Continua sendo streaming legítimo do lado do Spark - schema explícito, micro-batch, checkpoint, capacidade de reprocessar. Na nuvem, com o crédito do ambiente acadêmico, a objeção de custo cai e o desenho vira o de mercado: o producer publica no **Kinesis Data Stream** via `boto3.put_records` (`--destino kinesis`) e um **Glue Streaming job** consome do Kinesis materializando na mesma Bronze do S3. As duas fontes - pasta (dev) e Kinesis (nuvem) - convivem no repo apontando pro mesmo destino; o conceito do lado do Spark é idêntico, muda só a origem (`format("kinesis")`) e onde executa. Detalhes na [seção da AWS](#streaming-na-aws-kinesis--glue-streaming).
 
 **E o SQS, já que a nuvem é AWS?** Foi a pergunta que mais me fez pesquisar, então deixo registrado por quê não. Como *fonte* de dados o SQS não encaixa: o Spark não tem conector nativo, mas o fundo é conceitual - SQS é fila de tarefas, não log de eventos. A leitura é destrutiva (consumiu, a mensagem some), então não dá para reprocessar um histórico nem garantir ordem, que é justo o que o checkpoint do streaming pressupõe. Onde o SQS realmente ajudaria nesse desenho é como *campainha*: o S3 avisa "chegou arquivo novo" por evento e o consumer vai buscar, em vez de ficar varrendo o bucket - é o truque que o Auto Loader do Databricks usa para escalar. No meu volume, listar a pasta é instantâneo, então não paga a complexidade. Se um dia isso virasse streaming de verdade, com alta vazão e tempo real, o caminho seria Kinesis (o equivalente ao Kafka na AWS), com o SQS no máximo nesse papel de aviso - nunca carregando o dado sozinho.
 

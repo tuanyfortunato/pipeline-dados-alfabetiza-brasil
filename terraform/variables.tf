@@ -9,6 +9,11 @@ variable "bucket_name" {
   type        = string
 }
 
+variable "gcp_project_id" {
+  description = "Projeto GCP usado na extração do BigQuery (vai como argumento dos Glue jobs)."
+  type        = string
+}
+
 variable "tags" {
   description = "Tags aplicadas a todos os recursos."
   type        = map(string)
