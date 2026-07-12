@@ -1,31 +1,199 @@
-# 📊 Tech Challenge - Fase 2: Pipeline Híbrido para Análise da Alfabetização no Brasil
+# 📊 Pipeline Híbrido para Análise da Alfabetização no Brasil
 
-## 📌 Sobre o Projeto
-Este projeto foi desenvolvido como requisito de avaliação do Tech Challenge (Fase 2) e tem como objetivo construir um pipeline de dados robusto e escalável para analisar o cenário da alfabetização infantil no Brasil. 
+Projeto do Tech Challenge (Fase 2 - Pós Tech). A ideia é construir um pipeline de dados completo, seguindo a arquitetura Medalhão, para integrar as bases do **Indicador Criança Alfabetizada** e conseguir responder perguntas como: quantas crianças estão de fato alfabetizadas ao final do 2º ano? Quais municípios estão longe da meta?
 
-O pipeline processa os microdados da **Pesquisa Alfabetiza Brasil (INEP)** para calcular o **Indicador Criança Alfabetizada**, aplicando a regra de negócio oficial que estabelece o ponto de corte de **743 pontos** na escala de proficiência do Saeb.
+## 📌 Contexto do problema
 
-## 🏗️ Arquitetura da Solução
-A solução foi desenhada utilizando a **Arquitetura Medalhão**, separando o fluxo de processamento em três camadas principais:
+O **Compromisso Nacional Criança Alfabetizada** é a política pública que estabelece que, até 2030, toda criança brasileira deve estar alfabetizada ao final do 2º ano do ensino fundamental.
 
-* **🥉 Camada Bronze (Ingestão):** Conexão direta com o repositório da Base dos Dados no BigQuery (`br_inep_avaliacao_alfabetizacao.microdados`). Os dados brutos são extraídos e armazenados no formato `.parquet` para garantir a rastreabilidade (imutabilidade do dado origem).
-* **🥈 Camada Silver (Qualidade e Padronização):** Processamento dos dados da camada Bronze, realizando tratamento de valores nulos, conversão de tipos de dados (casting), padronização de strings e aplicação de testes de Qualidade de Dados (Data Quality).
-* **🥇 Camada Gold (Regras de Negócio e Agregação):** Transformação final aplicando a lógica de corte (>= 743 pontos). A base resultante entrega métricas prontas para o consumo analítico (BI) e serve como insumo estruturado para futuros modelos preditivos de Inteligência Artificial.
+Mas como medir "estar alfabetizada"? Em 2023 o INEP realizou a Pesquisa Alfabetiza Brasil e definiu um corte objetivo: **743 pontos na escala de proficiência do Saeb**. Quem atinge esse patamar é considerado alfabetizado, e o percentual de alunos acima do corte forma o Indicador Criança Alfabetizada.
 
-## 🛠️ Tecnologias Utilizadas
-* **Linguagem:** Python
-* **Processamento Distribuído:** Apache Spark (PySpark)
-* **Fonte de Dados:** Google BigQuery (via `spark-bigquery-connector`)
-* **Armazenamento:** Parquet
+O desafio de engenharia está no fato de que essas informações vivem em bases separadas: microdados por aluno, metas nacionais, estaduais e municipais, cadastros de território. Este pipeline integra tudo isso em uma camada analítica confiável.
 
-## 📂 Estrutura do Repositório
+Os dados vêm da [Base dos Dados](https://basedosdados.org/dataset/073a39d4-89cf-4068-b1e8-34ed0d9c0b72?table=e1de7a6a-5038-4e81-89f0-a15f2cc12c9b), que publica o dataset no BigQuery (`basedosdados.br_inep_avaliacao_alfabetizacao`). São 6 entidades:
 
-```text
-├── README.md                   # Documentação do projeto
-├── .gitignore                  # Arquivos ignorados pelo versionamento (dados locais)
-├── src/                        # Códigos-fonte do pipeline
-│   ├── 01_bronze/              # Scripts de extração e salvamento bruto
-│   ├── 02_silver/              # Scripts de limpeza e tipagem
-│   ├── 03_gold/                # Scripts de agregação e regras de negócio
-│   └── utils/                  # Scripts de validação de Data Quality
-└── notebooks/                  # Notebooks para exploração de dados e testes (Colab/Databricks)
+| Entidade | O que tem | Tamanho |
+|---|---|---|
+| `alunos` | Microdados por aluno (proficiência, rede, localização) | 3,87 mi de linhas |
+| `municipio` | Resultados por município | ~24 mil |
+| `uf` | Resultados por estado | 145 |
+| `meta_alfabetizacao_brasil` | Metas nacionais | 3 |
+| `meta_alfabetizacao_uf` | Metas por estado | 81 |
+| `meta_alfabetizacao_municipio` | Metas por município | ~10 mil |
+
+## 🏗️ Arquitetura
+
+O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo refinado em camadas, sempre preservando as versões anteriores. Se algo aparecer errado lá na ponta, dá para voltar camada por camada e descobrir se o problema veio de uma transformação ou se já estava na fonte.
+
+```
+                        ┌──────────────────────────────────────────────────┐
+ FONTES                 │              DATA LAKE (LAKE_PATH)               │
+┌────────────────────┐  │                                                  │
+│ BigQuery           │  │  ┌─────────┐    ┌──────────┐    ┌─────────┐      │
+│ (Base dos Dados)   │─▶│  │ BRONZE  │──▶│  SILVER  │──▶│  GOLD   │──────┼─▶ BI / ML
+│ 6 entidades (batch)│  │  │ fiel à  │    │ limpo +  │    │ métricas│      │
+└────────────────────┘  │  │ fonte   │    │ integrado│    │ negócio │      │
+                        │  └─────────┘    └──────────┘    └─────────┘      │
+┌────────────────────┐  │       ▲              │                           │
+│ Simulador de       │  │       │              ▼                           │
+│ eventos (streaming)│─▶│   landing/     ┌──────────────┐                  │
+└────────────────────┘  │   (raw JSON)   │ Data Quality │                  │
+                        └──────────────────────────────────────────────────┘
+```
+
+**🥉 Bronze** - cópia fiel da fonte, sem nenhum filtro de negócio. Salvo em Parquet com três colunas extras de rastreabilidade: `_ingestion_ts` (quando foi ingerido), `_source` (tabela de origem) e `_row_hash` (identificador do conteúdo da linha, útil para detectar mudanças). A tabela `alunos` fica particionada por ano (`ano=2023/`, `ano=2024/`), então quem consulta um ano só não paga o custo de ler os outros.
+
+**🥈 Silver** - limpeza e integração: tratamento de nulos, deduplicação, conversão de tipos (proficiência vira decimal, códigos IBGE viram inteiro), padronização de texto e os joins entre as 6 entidades. É aqui que rodam as validações formais de qualidade.
+
+**🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`) e tabelas prontas para consumo: indicador por município, meta × resultado e evolução temporal.
+
+A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e streaming (simulado com eventos JSON caindo numa pasta landing) para atualizações em tempo quase real.
+
+### Status atual
+
+| Etapa | Situação |
+|---|---|
+| Ingestão batch → Bronze | ✅ pronto |
+| Data quality com relatório | ✅ pronto (básico na Bronze, suite completa vem com a Silver) |
+| Streaming | 🚧 em desenvolvimento |
+| Silver | 🚧 em desenvolvimento |
+| Gold | 🚧 em desenvolvimento |
+| Promoção do lake para o S3 | 📋 planejado |
+
+## 📂 Estrutura do repositório
+
+```
+├── README.md
+├── requirements.txt
+├── .env.example                     # modelo de configuração (copiar para .env)
+├── scripts/
+│   └── test_bigquery_connection.py  # smoke test da credencial
+├── src/
+│   ├── utils/
+│   │   ├── logger.py                # logging padrão dos scripts
+│   │   └── data_quality.py          # checks de qualidade reutilizáveis
+│   ├── 01_bronze/
+│   │   └── ingestao_batch_bigquery.py
+│   ├── 02_silver/                   # em desenvolvimento
+│   └── 03_gold/                     # em desenvolvimento
+├── notebooks/                       # exploração
+├── data/                            # data lake local (gerado na execução, fora do Git)
+└── logs/                            # relatórios de qualidade (gerados na execução)
+```
+
+Se você está lendo o código pela primeira vez, sugiro começar pelo `test_bigquery_connection.py` (10 linhas, mostra como falamos com a fonte), depois os utils, e daí seguir os números das pastas: `01_bronze` → `02_silver` → `03_gold`. Os números são a própria ordem de execução do pipeline.
+
+## ▶️ Como executar
+
+### O que você precisa antes
+
+- Python 3.12 ou mais novo
+- Um projeto no Google Cloud (o cadastro é gratuito) com a **BigQuery API** habilitada. O dataset é público, mas as consultas rodam por dentro do seu projeto - o free tier de 1 TB/mês cobre com folga
+- Uma Service Account com papel `BigQuery User` e a chave JSON baixada
+
+### Passo a passo
+
+1. Clone o repositório e prepare o ambiente:
+
+```powershell
+git clone https://github.com/tuanyfortunato/pipeline-dados-alfabetiza-brasil.git
+cd pipeline-dados-alfabetiza-brasil
+python -m venv .venv
+.venv\Scripts\Activate.ps1        # no Linux/Mac: source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Crie a pasta `credentials/` na raiz e coloque a chave JSON da Service Account dentro dela. Depois copie o `.env.example` para `.env` e preencha:
+
+```ini
+GOOGLE_APPLICATION_CREDENTIALS=./credentials/sua-chave.json
+GCP_PROJECT_ID=seu-project-id
+LAKE_PATH=./data
+```
+
+Tanto `credentials/` quanto `.env` estão no `.gitignore` - nada disso sobe para o Git.
+
+3. Teste a conexão:
+
+```powershell
+python scripts/test_bigquery_connection.py
+```
+
+Se aparecer `Conexão OK. 10 linhas retornadas.` com uma prévia da tabela de alunos, está tudo certo.
+
+4. Rode a ingestão Bronze:
+
+```powershell
+# todas as entidades (leva ~1 min)
+python src/01_bronze/ingestao_batch_bigquery.py
+
+# ou só algumas
+python src/01_bronze/ingestao_batch_bigquery.py uf municipio
+```
+
+No final você vai ter os Parquet em `data/bronze/batch/<entidade>/` e um relatório de qualidade em `logs/dq_bronze_<timestamp>.json`, com score e o detalhe de cada check.
+
+Se um check crítico falhar (base vazia, coluna obrigatória faltando), o script para com `DataQualityError`. Isso é proposital: dado ruim não segue adiante em silêncio.
+
+5. Silver e Gold: em desenvolvimento - esta seção cresce junto com o código.
+
+## ✅ Qualidade de dados
+
+Os checks (em `src/utils/data_quality.py`) cobrem as quatro dimensões clássicas:
+
+- **Completude** - o dado está presente? (base não vazia, nulos em colunas-chave)
+- **Validade** - formato e faixa corretos? (ex.: proficiência dentro da escala Saeb)
+- **Consistência** - os campos fazem sentido entre si? (ex.: todo `id_municipio` dos alunos existe na dimensão município)
+- **Unicidade** - sem duplicatas indevidas nas chaves
+
+Toda execução gera um relatório JSON em `logs/` com o score. Na Silver entra também a estratégia de quarentena: registro reprovado é separado para análise em vez de descartado (ou de travar a esteira inteira).
+
+## 🛠️ Tecnologias
+
+- **Python + pandas** na ingestão - o volume atual (268 MB) cabe tranquilo em memória, então preferi a simplicidade
+- **google-cloud-bigquery** para extração direto da fonte, sem download manual de arquivo
+- **Parquet** em todas as camadas - colunar, comprimido e com tipagem forte
+- **PySpark** nas transformações Silver/Gold e no streaming (próximas fases)
+- **AWS S3 + Athena** como destino do data lake na nuvem (promoção planejada)
+
+## ⚖️ Decisões arquiteturais
+
+Algumas escolhas que fiz e o raciocínio por trás delas:
+
+**Por que AWS, se a fonte está no BigQuery?** Usar GCP para tudo evitaria um hop de extração, é verdade. Mas concentrei o data lake na AWS pelo peso do ecossistema S3/Athena/Glue no mercado e por manter governança e custo num provedor só. O hop custa pouco: a extração roda uma vez por carga e cabe no free tier do BigQuery.
+
+**Desenvolver local primeiro, promover para a nuvem depois.** O `LAKE_PATH` aponta para `./data` durante o desenvolvimento e a estrutura de pastas espelha exatamente o futuro bucket S3. Quando a lógica estiver validada, a promoção é trocar uma variável de ambiente. Ganho velocidade de iteração e não pago nuvem enquanto erro.
+
+**Cadê a camada raw?** Algumas arquiteturas separam raw (formato original) de Bronze (Parquet + metadados). Como a minha fonte é um warehouse, não existe um "arquivo original" para preservar - a Bronze já nasce sendo a cópia fiel, sem filtro de negócio. No streaming a história é outra: lá a pasta `landing/` guarda o JSON exatamente como chegou, fazendo o papel de raw.
+
+**pandas ou Spark?** Os dois. pandas resolve a ingestão com muito menos setup; o Spark entra onde realmente agrega - joins distribuídos entre as entidades, streaming estruturado e folga para o volume crescer.
+
+**Batch e streaming separados desde a Bronze** (`bronze/batch/` e `bronze/streaming/`), para manter a rastreabilidade da origem e permitir reprocessar um lado sem tocar no outro.
+
+## 📡 Monitoramento
+
+Todos os scripts logam início/fim e volume processado por entidade, e os relatórios de qualidade ficam persistidos em `logs/`. Em produção na AWS isso evoluiria naturalmente para CloudWatch (métricas de volume, latência e falha de ingestão) com alertas via SNS.
+
+## 💰 FinOps
+
+- Parquet com compressão snappy em todas as camadas: menos storage, menos bytes escaneados
+- Particionamento por ano: as consultas leem só o que precisam
+- A Bronze é materializada uma vez e todo o resto parte dela - a fonte não é re-consultada a cada experimento
+- Nenhum cluster ligado: desenvolvimento local, e na nuvem S3/Athena são serverless
+- Lifecycle planejado no S3: Bronze migra para armazenamento frio depois de N dias
+
+A estimativa de custo mensal da arquitetura completa fica na casa de **US$ 0 a 3** (detalho a conta na promoção para a AWS).
+
+## 🤖 Aplicação em IA
+
+A Gold foi desenhada pensando em servir modelos, não só dashboards:
+
+- **Predição de alfabetização por município**: cruzando o indicador com features socioeconômicas, dá para prever quais municípios não vão atingir a meta de 2030 e priorizar intervenção
+- **Clusters de vulnerabilidade educacional**: agrupar municípios por perfil de desempenho × meta × território
+- **Política pública baseada em evidência**: o meta × resultado por recorte geográfico vira um ranking objetivo de onde investir
+
+## 👩‍💻 Autora
+
+**Tuany Fortunato do Carmo** - Tech Challenge Fase 2, Pós Tech.
+
+Vídeo executivo: link será adicionado na entrega final.
