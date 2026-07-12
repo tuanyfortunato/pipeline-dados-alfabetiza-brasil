@@ -45,7 +45,7 @@ O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo ref
 
 **🥈 Silver** - limpeza e integração: conversão de tipos (proficiência vira decimal, códigos IBGE viram inteiro), decodificação dos códigos pelo dicionário da fonte, padronização do vocabulário de rede (um rótulo só, do resultado à meta), flags de ausência (`presente`, `sem_nota`), derivação da UF a partir do código do município e o empilhamento das metas numa estrutura única. É aqui que roda a suite formal de qualidade - e onde entra a **quarentena**: registro que reprova (ex.: município órfão da dimensão) é separado em `silver/quarentena/` com o motivo, em vez de sumir num filtro ou derrubar a esteira.
 
-**🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`) e tabelas prontas para consumo: indicador por município, meta × resultado e evolução temporal.
+**🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`, com a taxa ponderada pelo peso amostral - o recálculo fecha com o gabarito oficial com mediana de 0,004pp) e três tabelas prontas para consumo: indicador por município, meta × resultado (com gap e flag de atingimento) e evolução temporal por recorte geográfico e rede. O esquema é rígido e está documentado em `docs/dicionario_dados_gold.md`.
 
 A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e streaming (simulado com eventos JSON caindo numa pasta landing) para atualizações em tempo quase real.
 
@@ -55,9 +55,9 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 |---|---|
 | Ingestão batch → Bronze | ✅ pronto |
 | Silver (limpeza + integração) | ✅ pronto |
-| Data quality com relatório | ✅ pronto (básico na Bronze, suite completa na Silver) |
+| Gold (métricas de negócio) | ✅ pronto |
+| Data quality com relatório | ✅ pronto (em todas as camadas) |
 | Streaming | 🚧 em desenvolvimento |
-| Gold | 🚧 em desenvolvimento |
 | Promoção do lake para o S3 | 📋 planejado |
 
 ## 📂 Estrutura do repositório
@@ -66,6 +66,8 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 ├── README.md
 ├── requirements.txt
 ├── .env.example                     # modelo de configuração (copiar para .env)
+├── docs/
+│   └── dicionario_dados_gold.md     # contrato das tabelas Gold (esquema + avisos de fonte)
 ├── scripts/
 │   └── test_bigquery_connection.py  # smoke test da credencial
 ├── src/
@@ -76,10 +78,12 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 │   │   └── ingestao_batch_bigquery.py
 │   ├── 02_silver/
 │   │   └── tratamento_integracao.py # limpeza, padronização e integração das entidades
-│   └── 03_gold/                     # em desenvolvimento
+│   └── 03_gold/
+│       └── metricas_gold.py         # regra dos 743 + as 3 tabelas analíticas
 ├── notebooks/
 │   ├── exploracao_bronze.ipynb      # EDA da Bronze (perfil, nulos, corte 743, chaves)
-│   └── laboratorio_silver.ipynb     # prototipagem das transformações da Silver
+│   ├── laboratorio_silver.ipynb     # prototipagem das transformações da Silver
+│   └── laboratorio_gold.ipynb       # sondagem das decisões da Gold (peso, denominador, metas)
 ├── data/                            # data lake local (gerado na execução, fora do Git)
 └── logs/                            # relatórios de qualidade (gerados na execução)
 ```
@@ -146,9 +150,15 @@ python src/02_silver/tratamento_integracao.py
 
 Ele lê a Bronze e grava a camada tratada em `data/silver/` - `alunos/` (particionado por ano), `quarentena/alunos/`, `resultados/municipio` e `resultados/uf`, e `metas/` (as três tabelas empilhadas). No fim sai um relatório em `logs/dq_silver_<timestamp>.json`. Na base atual são 3,87 mi de alunos tratados, 410 linhas em quarentena e score de qualidade de ~91% (o único ponto de atenção fica como *warning*, não derruba o pipeline).
 
-6. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves) e `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois. Ambos estão versionados já executados, dá para ler direto no GitHub.
+6. Rode as métricas da Gold:
 
-7. Gold: em desenvolvimento - esta seção cresce junto com o código.
+```powershell
+python src/03_gold/metricas_gold.py
+```
+
+Ele lê a Silver e grava em `data/gold/` as três tabelas analíticas: `indicador_municipio/` (10,4 mil linhas), `meta_vs_resultado/` (com gap e flag de atingimento) e `evolucao_temporal/` (33,4 mil linhas, por recorte geográfico e rede). O relatório sai em `logs/dq_gold_<timestamp>.json` - na base atual, score de ~94% com um único *warning*: o check que confronta o recálculo com o gabarito oficial e acusa 45 municípios divergentes conhecidos (0,4%, quase todos de 2023 - detalhes no dicionário de dados). Uma prova real: a taxa Brasil 2024 recalculada dá **59,2** - exatamente o número oficial.
+
+7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale). Todos estão versionados já executados, dá para ler direto no GitHub.
 
 ## ✅ Qualidade de dados
 
@@ -213,7 +223,7 @@ Na prática, a escolha na AWS não é cravar uma ferramenta só, é usar o servi
 
 - **Bronze e Silver (batch)** seguem em pandas, rodando como Glue Python Shell job (ou Lambda nos passos mais leves), lendo e escrevendo direto no S3. É basicamente trocar o `LAKE_PATH` local por um caminho `s3://` - o código quase não muda, e o custo fica na casa de centavos por execução.
 - **Streaming** é onde o Spark entra de verdade, com Structured Streaming: aí ele não é enfeite, resolve micro-batches, checkpoint e tolerância a falha. Repara que aqui a escolha não vem do volume, e sim da natureza do problema.
-- **Gold** não precisa de pandas nem de Spark: com os dados já em Parquet no S3, as agregações do indicador saem em SQL no Athena - serverless e por uma fração de centavo do que é escaneado.
+- **Gold** hoje roda em pandas junto com o resto do batch, mas na nuvem pode dispensar os dois: com os dados já em Parquet no S3, as agregações do indicador saem em SQL no Athena - serverless e por uma fração de centavo do que é escaneado.
 
 Guardo o Spark no batch para o dia em que o volume realmente crescer. Quando esse dia chegar, a migração parte dos números que a versão em pandas já validou, porque trocar de ferramenta não pode mudar o resultado.
 
