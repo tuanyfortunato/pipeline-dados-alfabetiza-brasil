@@ -19,9 +19,12 @@ resource "aws_secretsmanager_secret" "gcp_service_account" {
 }
 
 locals {
-  # pinos iguais ao requirements.txt: o job roda com as versões que o pipeline validou
+  # pinos iguais ao requirements.txt, com UMA exceção: o Glue Python Shell roda
+  # Python 3.9, e google-cloud-bigquery>=3.42 exige 3.10+. Fixamos a 3.41.0 (última
+  # compatível com 3.9); a API usada pelo pipeline é a mesma. Local (Python 3.11)
+  # segue com 3.42.2 no requirements.txt.
   modulos_python = join(",", [
-    "google-cloud-bigquery==3.42.2",
+    "google-cloud-bigquery==3.41.0",
     "google-cloud-bigquery-storage==2.27.0",
     "db-dtypes==1.3.0",
     "pandas==2.2.3",
