@@ -205,6 +205,18 @@ Todos os scripts logam início/fim e volume processado por entidade, e os relat�
 
 A estimativa de custo mensal da arquitetura completa fica na casa de **US$ 0 a 3** (detalho a conta na promoção para a AWS).
 
+### pandas ou Spark quando subir para a AWS?
+
+Essa foi a decisão de custo × performance que mais me fez pensar, então deixo o raciocínio registrado. Pelo volume, não tem muito o que discutir: a maior tabela tem 3,87 mi de linhas e 268 MB - cabe em memória com sobra. O Spark só começa a valer a pena lá pelas dezenas de GB ou centenas de milhões de linhas; abaixo disso, o custo de subir cluster, o shuffle e a JVM costumam deixar o job mais lento e mais caro do que um pandas bem escrito. E mesmo crescendo, cada nova onda da pesquisa soma ~3,9 mi de linhas por ano - levaria muito tempo até o volume pedir processamento distribuído.
+
+Na prática, a escolha na AWS não é cravar uma ferramenta só, é usar o serviço certo em cada etapa:
+
+- **Bronze e Silver (batch)** seguem em pandas, rodando como Glue Python Shell job (ou Lambda nos passos mais leves), lendo e escrevendo direto no S3. É basicamente trocar o `LAKE_PATH` local por um caminho `s3://` - o código quase não muda, e o custo fica na casa de centavos por execução.
+- **Streaming** é onde o Spark entra de verdade, com Structured Streaming: aí ele não é enfeite, resolve micro-batches, checkpoint e tolerância a falha. Repara que aqui a escolha não vem do volume, e sim da natureza do problema.
+- **Gold** não precisa de pandas nem de Spark: com os dados já em Parquet no S3, as agregações do indicador saem em SQL no Athena - serverless e por uma fração de centavo do que é escaneado.
+
+Guardo o Spark no batch para o dia em que o volume realmente crescer. Quando esse dia chegar, a migração parte dos números que a versão em pandas já validou, porque trocar de ferramenta não pode mudar o resultado.
+
 ## 🤖 Aplicação em IA
 
 A Gold foi desenhada pensando em servir modelos, não só dashboards:
