@@ -11,10 +11,15 @@ Este arquivo é o script de entrada de um Glue Streaming job (glue_version 4.0, 
 traz o conector Kinesis nativo). Sobe pro S3 via scripts/deploy_glue_artifacts.ps1
 e é referenciado pelo script_location do aws_glue_job.streaming (terraform).
 
+Schema explícito de propósito: não usamos o inferSchema do Glue porque em streaming
+ele é frágil (a inferência pode não materializar as colunas a tempo do micro-batch,
+entregando um placeholder). Lemos a coluna crua `data` do Kinesis e aplicamos o
+mesmo schema do consumer local via from_json.
+
 Argumentos do job (default_arguments no Terraform):
     --stream_arn    ARN do Kinesis Data Stream de eventos
     --lake_bucket   nome do bucket do data lake
-    --aws_region    região do stream (monta o endpoint do Kinesis)
+    --aws_region    região do stream
 """
 import sys
 
@@ -23,9 +28,24 @@ from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    DoubleType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
-# mesmas colunas de negócio do consumer local; a ordem alimenta o _row_hash
-COLUNAS_FONTE = ["id_municipio", "ano", "proficiencia_media", "tipo_evento", "event_timestamp"]
+# mesmo schema do consumer local; a ordem das colunas alimenta o _row_hash
+SCHEMA = StructType([
+    StructField("id_municipio", LongType()),
+    StructField("ano", IntegerType()),
+    StructField("proficiencia_media", DoubleType()),
+    StructField("tipo_evento", StringType()),
+    StructField("event_timestamp", StringType()),
+])
+COLUNAS_FONTE = [c.name for c in SCHEMA.fields]
 SOURCE = "kinesis/alfabetiza-eventos"
 
 
@@ -42,44 +62,42 @@ def main() -> None:
     output = f"s3://{args['lake_bucket']}/bronze/streaming/eventos_indicador/"
     checkpoint = f"s3://{args['lake_bucket']}/bronze/streaming/_checkpoint_kinesis/"
 
-    # o Glue decodifica o JSON e infere o schema (classification/inferSchema);
-    # o DataFrame de streaming já chega com as colunas de negócio prontas
-    kinesis_options = {
-        "streamARN": args["stream_arn"],
-        "startingPosition": "TRIM_HORIZON",
-        "inferSchema": "true",
-        "classification": "json",
-        "endpointUrl": f"https://kinesis.{args['aws_region']}.amazonaws.com",
-    }
-    eventos = glue_context.create_data_frame.from_options(
-        connection_type="kinesis",
-        connection_options=kinesis_options,
+    # o conector Spark nativo do Glue pede streamName + endpointUrl (o streamARN é
+    # da API create_data_frame.from_options); derivamos o nome do próprio ARN
+    stream_name = args["stream_arn"].split("/")[-1]
+    endpoint = f"https://kinesis.{args['aws_region']}.amazonaws.com"
+
+    # sem classification/inferSchema: o frame chega cru (coluna binária `data` com o
+    # payload) e parseamos nós mesmos com from_json, evitando a inferência frágil
+    bruto = (
+        spark.readStream
+        .format("kinesis")
+        .option("streamName", stream_name)
+        .option("endpointUrl", endpoint)
+        .option("startingposition", "TRIM_HORIZON")
+        .load()
     )
 
-    def processar_batch(df, _batch_id) -> None:
-        if df.rdd.isEmpty():
-            return
+    eventos = (
+        bruto
+        .select(F.from_json(F.col("data").cast("string"), SCHEMA).alias("e"))
+        .select("e.*")
         # mesmos metadados de rastreabilidade da Bronze batch e do consumer local
-        enriquecido = (
-            df
-            .withColumn("_row_hash", F.sha2(F.concat_ws("|", *COLUNAS_FONTE), 256))
-            .withColumn("_ingestion_ts", F.current_timestamp())
-            .withColumn("_source", F.lit(SOURCE))
-        )
-        (
-            enriquecido.write
-            .mode("append")
-            .partitionBy("ano")
-            .parquet(output)
-        )
-
-    # windowSize é o gatilho do micro-batch; checkpoint no S3 garante exactly-once
-    # e retomada de onde parou se o job cair (ou for parado e religado na demo)
-    glue_context.forEachBatch(
-        frame=eventos,
-        batch_function=processar_batch,
-        options={"windowSize": "30 seconds", "checkpointLocation": checkpoint},
+        .withColumn("_row_hash", F.sha2(F.concat_ws("|", *COLUNAS_FONTE), 256))
+        .withColumn("_ingestion_ts", F.current_timestamp())
+        .withColumn("_source", F.lit(SOURCE))
     )
+
+    query = (
+        eventos.writeStream
+        .format("parquet")
+        .option("path", output)
+        .option("checkpointLocation", checkpoint)
+        .partitionBy("ano")
+        .trigger(processingTime="30 seconds")
+        .start()
+    )
+    query.awaitTermination()
     job.commit()
 
 
