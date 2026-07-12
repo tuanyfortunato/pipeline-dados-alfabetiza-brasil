@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from .lake import is_s3, lake_path
+
 
 class DataQualityError(Exception):
     pass
@@ -95,7 +97,7 @@ def check_referential_integrity(df: pd.DataFrame, entity: str, column: str,
                       orphans == 0, f"{orphans} chaves órfãs", severity)
 
 
-def save_report(results: list[dict], layer: str, logs_dir: str = "logs") -> Path:
+def save_report(results: list[dict], layer: str, logs_dir: str = None) -> str:
     contagem = {s: sum(1 for r in results if r["status"] == s)
                 for s in ("pass", "warning", "fail")}
     report = {
@@ -108,10 +110,22 @@ def save_report(results: list[dict], layer: str, logs_dir: str = "logs") -> Path
         "failed": contagem["fail"],
         "results": results,
     }
+    # local mantém o logs/ do repositório; na nuvem o relatório vive no lake
+    if logs_dir is None:
+        logs_dir = lake_path("logs") if is_s3() else "logs"
+    nome = f"dq_{layer}_{datetime.now():%Y%m%d_%H%M%S}.json"
+    conteudo = json.dumps(report, ensure_ascii=False, indent=2)
+    if str(logs_dir).startswith("s3://"):
+        import s3fs
+
+        caminho = f"{logs_dir}/{nome}"
+        with s3fs.S3FileSystem().open(caminho, "w", encoding="utf-8") as f:
+            f.write(conteudo)
+        return caminho
     Path(logs_dir).mkdir(exist_ok=True)
-    path = Path(logs_dir) / f"dq_{layer}_{datetime.now():%Y%m%d_%H%M%S}.json"
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    path = Path(logs_dir) / nome
+    path.write_text(conteudo, encoding="utf-8")
+    return str(path)
 
 
 def fail_if_critical(results: list[dict]) -> None:
