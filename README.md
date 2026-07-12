@@ -1,8 +1,8 @@
-# 📊 Pipeline Híbrido para Análise da Alfabetização no Brasil
+# Pipeline Híbrido para Análise da Alfabetização no Brasil
 
 Projeto do Tech Challenge (Fase 2 - Pós Tech). A ideia é construir um pipeline de dados completo, seguindo a arquitetura Medalhão, para integrar as bases do **Indicador Criança Alfabetizada** e conseguir responder perguntas como: quantas crianças estão de fato alfabetizadas ao final do 2º ano? Quais municípios estão longe da meta?
 
-## 📌 Contexto do problema
+## Contexto do problema
 
 O **Compromisso Nacional Criança Alfabetizada** é a política pública que estabelece que, até 2030, toda criança brasileira deve estar alfabetizada ao final do 2º ano do ensino fundamental.
 
@@ -21,7 +21,7 @@ Os dados vêm da [Base dos Dados](https://basedosdados.org/dataset/073a39d4-89cf
 | `meta_alfabetizacao_uf` | Metas por estado | 81 |
 | `meta_alfabetizacao_municipio` | Metas por município | ~10 mil |
 
-## 🏗️ Arquitetura
+## Arquitetura
 
 O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo refinado em camadas, sempre preservando as versões anteriores. Se algo aparecer errado lá na ponta, dá para voltar camada por camada e descobrir se o problema veio de uma transformação ou se já estava na fonte.
 
@@ -47,7 +47,7 @@ O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo ref
 
 **🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`, com a taxa ponderada pelo peso amostral - o recálculo fecha com o gabarito oficial com mediana de 0,004pp) e três tabelas prontas para consumo: indicador por município, meta × resultado (com gap e flag de atingimento) e evolução temporal por recorte geográfico e rede. O esquema é rígido e está documentado em `docs/dicionario_dados_gold.md`.
 
-A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e streaming (simulado com eventos JSON caindo numa pasta landing) para atualizações em tempo quase real.
+A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e streaming para atualizações em tempo quase real - eventos JSON caem numa pasta landing e o Spark Structured Streaming os consome para a Bronze. O passo a passo está em [Rodar o streaming](#rodar-o-streaming) e o porquê da arquitetura, em [Decisões arquiteturais](#️-decisões-arquiteturais).
 
 ### Status atual
 
@@ -57,7 +57,7 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 | Silver (limpeza + integração) | ✅ pronto |
 | Gold (métricas de negócio) | ✅ pronto |
 | Data quality com relatório | ✅ pronto (em todas as camadas) |
-| Streaming | 🚧 em desenvolvimento |
+| Streaming (producer + consumer Spark) | ✅ pronto |
 | Promoção do lake para o S3 | 📋 planejado |
 
 ## 📂 Estrutura do repositório
@@ -67,15 +67,20 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 ├── requirements.txt
 ├── .env.example                     # modelo de configuração (copiar para .env)
 ├── docs/
+│   ├── ambiente_spark.md            # como montar o ambiente do streaming (venv 3.11, Java, winutils)
 │   └── dicionario_dados_gold.md     # contrato das tabelas Gold (esquema + avisos de fonte)
 ├── scripts/
 │   └── test_bigquery_connection.py  # smoke test da credencial
 ├── src/
 │   ├── utils/
 │   │   ├── logger.py                # logging padrão dos scripts
-│   │   └── data_quality.py          # checks de qualidade reutilizáveis
+│   │   ├── data_quality.py          # checks de qualidade reutilizáveis
+│   │   └── spark_session.py         # sessão Spark local, usada pelo streaming
+│   ├── streaming/
+│   │   └── producer_eventos.py      # simulador: gera eventos JSON na pasta landing
 │   ├── 01_bronze/
-│   │   └── ingestao_batch_bigquery.py
+│   │   ├── ingestao_batch_bigquery.py
+│   │   └── ingestao_streaming_consumer.py  # Spark lê a landing e materializa na Bronze
 │   ├── 02_silver/
 │   │   └── tratamento_integracao.py # limpeza, padronização e integração das entidades
 │   └── 03_gold/
@@ -90,11 +95,11 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 
 Se você está lendo o código pela primeira vez, sugiro começar pelo `test_bigquery_connection.py` (10 linhas, mostra como falamos com a fonte), depois os utils, e daí seguir os números das pastas: `01_bronze` → `02_silver` → `03_gold`. Os números são a própria ordem de execução do pipeline.
 
-## ▶️ Como executar
+## Como executar
 
 ### O que você precisa antes
 
-- Python 3.12 ou mais novo
+- Python 3.11 (a mesma versão usada nos dois ambientes do projeto)
 - Um projeto no Google Cloud (o cadastro é gratuito) com a **BigQuery API** habilitada. O dataset é público, mas as consultas rodam por dentro do seu projeto - o free tier de 1 TB/mês cobre com folga
 - Uma Service Account com papel `BigQuery User` e a chave JSON baixada
 
@@ -160,7 +165,35 @@ Ele lê a Silver e grava em `data/gold/` as três tabelas analíticas: `indicado
 
 7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale). Todos estão versionados já executados, dá para ler direto no GitHub.
 
-## ✅ Qualidade de dados
+### Rodar o streaming
+
+O batch acima cobre as cargas históricas. O streaming é a outra metade da ingestão: em vez de ler um lote inteiro de uma vez, ele reage a eventos que vão pingando - novas medições e revisões de meta do indicador.
+
+Para não depender de um serviço pago só para mostrar o conceito, o streaming aqui é baseado em arquivos. Um script fica escrevendo eventos JSON numa pasta (a *landing*), e o Spark fica de olho nessa pasta e processa cada arquivo novo que aparece. Do ponto de vista do Spark isso é streaming de verdade - com schema, micro-batch e checkpoint -, só que a "fila" é uma pasta. O raciocínio completo dessa escolha está lá embaixo, em [Decisões arquiteturais](#️-decisões-arquiteturais).
+
+Um detalhe de ambiente antes de rodar: o PySpark 3.5 só vai até o Python 3.11, e o resto do projeto usa uma versão mais nova. Para não mexer no que já funciona, o streaming vive num venv à parte, o `.venv-spark`. Como montá-lo (Python 3.11, JDK 17 e os binários do Hadoop no Windows) está em `docs/ambiente_spark.md` - é setup de uma vez só.
+
+Com o `.venv-spark` pronto, são três passos:
+
+1. Ligue o **producer** num terminal. Ele gera os eventos e vai gravando na landing:
+
+```powershell
+python src/streaming/producer_eventos.py --lotes 5 --eventos 3 --intervalo 2
+```
+
+Cada lote vira um arquivo `data/bronze/streaming/landing/evento_<timestamp>.json`. Ele escreve primeiro num arquivo temporário e só renomeia no fim - assim o Spark nunca lê um arquivo pela metade. Com `--lotes 0` ele fica gerando sem parar (Ctrl+C encerra).
+
+2. Rode o **consumer**, esse sim no `.venv-spark`. Ele lê a landing como stream e materializa os eventos em Parquet na Bronze, com os mesmos metadados de rastreabilidade do batch:
+
+```powershell
+.venv-spark\Scripts\python.exe src/01_bronze/ingestao_streaming_consumer.py
+```
+
+Por padrão ele processa o que estiver na landing e encerra - mais fácil de demonstrar e de gravar. Com `--continuo` ele fica escutando a pasta e reprocessando a cada 10s. O checkpoint em `data/bronze/streaming/_checkpoint/` guarda o que já foi lido, então rodar de novo não duplica evento nenhum.
+
+3. Rode a **Silver de novo**. Ela detecta os eventos em `bronze/streaming/`, valida contra a dimensão de municípios e junta na camada tratada, em `silver/eventos_indicador/`. Se não houver streaming nenhum, a Silver roda igual à do batch - a integração é opcional e não trava a esteira. É aqui que o streaming e as bases batch de fato se encontram.
+
+## Qualidade de dados
 
 Os checks (em `src/utils/data_quality.py`) cobrem as quatro dimensões clássicas:
 
@@ -175,15 +208,15 @@ Toda execução gera um relatório JSON em `logs/` com o score. Na Silver entra 
 
 Por que não usei Great Expectations ou Soda? Para o volume e o número de regras deste projeto, um módulo próprio de ~100 linhas cobre as mesmas dimensões sem adicionar dependência pesada - e me obrigou a entender cada validação em vez de configurar YAML. Num cenário corporativo com dezenas de fontes, migrar para uma dessas ferramentas seria o caminho natural.
 
-## 🛠️ Tecnologias
+## Tecnologias
 
 - **Python + pandas** na ingestão e nas transformações Bronze e Silver - o volume atual (268 MB, 3,87 mi de linhas) cabe tranquilo em memória, então preferi a simplicidade
 - **google-cloud-bigquery** para extração direto da fonte, sem download manual de arquivo
 - **Parquet** em todas as camadas - colunar, comprimido e com tipagem forte
-- **PySpark** reservado para o streaming e para quando o volume exigir escala distribuída (próximas fases)
+- **PySpark (Structured Streaming)** no consumer que lê a landing e materializa os eventos na Bronze - e reservado para quando o volume do batch exigir escala distribuída
 - **AWS S3 + Athena** como destino do data lake na nuvem (promoção planejada)
 
-## ⚖️ Decisões arquiteturais
+## Decisões arquiteturais
 
 Algumas escolhas que fiz e o raciocínio por trás delas:
 
@@ -197,6 +230,10 @@ Algumas escolhas que fiz e o raciocínio por trás delas:
 
 **Batch, streaming ou os dois?** Os dois, porque resolvem coisas diferentes. As cargas históricas do INEP - microdados, metas, municípios - são grandes e mudam poucas vezes por ano; aí batch é o natural, roda de tempos em tempos e processa o lote inteiro de uma vez. Já a chegada de novas medições ou revisões de meta é onde compensa reagir rápido, e é onde entra o streaming (simulado com eventos JSON caindo numa pasta landing). Deixei os dois separados desde a Bronze (`bronze/batch/` e `bronze/streaming/`) para não misturar a origem e poder reprocessar um lado sem encostar no outro. Se fosse só batch, perderia o "quase tempo real" que o problema pede; se fosse só streaming, pagaria complexidade à toa nas cargas que são naturalmente periódicas.
 
+**Fila gerenciada ou arquivos numa pasta?** Streaming de manual pede uma fila - Kafka, Kinesis. Não fui por aí, e o motivo principal é simples: custo. O Kinesis não tem free tier, e a ideia aqui é demonstrar o padrão, não pagar por vazão que não vou usar. Fui de *file streaming*: os eventos caem como JSON numa pasta landing e o Spark Structured Streaming consome essa pasta. Continua sendo streaming legítimo do lado do Spark - schema explícito, micro-batch, checkpoint, capacidade de reprocessar -, e tem um bônus de projeto: na nuvem a landing vira só mais um prefixo no mesmo bucket S3 do lake, e o consumer troca `./data` por `s3a://...` sem mudar mais nada.
+
+**E o SQS, já que a nuvem é AWS?** Foi a pergunta que mais me fez pesquisar, então deixo registrado por quê não. Como *fonte* de dados o SQS não encaixa: o Spark não tem conector nativo, mas o fundo é conceitual - SQS é fila de tarefas, não log de eventos. A leitura é destrutiva (consumiu, a mensagem some), então não dá para reprocessar um histórico nem garantir ordem, que é justo o que o checkpoint do streaming pressupõe. Onde o SQS realmente ajudaria nesse desenho é como *campainha*: o S3 avisa "chegou arquivo novo" por evento e o consumer vai buscar, em vez de ficar varrendo o bucket - é o truque que o Auto Loader do Databricks usa para escalar. No meu volume, listar a pasta é instantâneo, então não paga a complexidade. Se um dia isso virasse streaming de verdade, com alta vazão e tempo real, o caminho seria Kinesis (o equivalente ao Kafka na AWS), com o SQS no máximo nesse papel de aviso - nunca carregando o dado sozinho.
+
 **Data lake ou data warehouse?** Cheguei a considerar jogar tudo num data warehouse (Redshift, ou o próprio BigQuery que já é a fonte) e resolver no SQL. Fiquei com data lake em S3 por dois motivos: os microdados de aluno já são 3,87 milhões de linhas e crescem a cada nova onda da pesquisa - storage barato em Parquet pesa mais que a conveniência do SQL - e o formato colunar aberto não me prende a um fornecedor: hoje leio com Spark, amanhã com Athena, DuckDB ou o que vier. O warehouse não sai de cena, só troca de lado: as tabelas Gold ficam expostas via Athena, que me dá a experiência de warehouse (SQL, catálogo, BI) sem manter cluster nenhum ligado. Na prática, lake para armazenar e refinar, "warehouse" serverless só na ponta do consumo.
 
 **Custo ou performance?** Nesse volume dá para ter os dois, então otimizei custo sem sacrificar tempo de resposta perceptível. Parquet particionado faz a consulta ler só a fatia que interessa (menos byte escaneado = menos conta no Athena e menos espera), a Bronze é materializada uma vez e todo o resto parte dela em vez de bater na fonte de novo, e nada fica ligado 24/7 - desenvolvimento local e, na nuvem, S3 e Athena são serverless. Se um dia a base crescer a ponto de a performance apertar, o caminho é subir um cluster Spark (Glue/EMR) sob demanda: aí sim pago mais em troca de paralelismo, mas como escolha consciente para quando o volume justificar, não como padrão.
@@ -205,7 +242,7 @@ Algumas escolhas que fiz e o raciocínio por trás delas:
 
 Todos os scripts logam início/fim e volume processado por entidade, e os relatórios de qualidade ficam persistidos em `logs/`. Em produção na AWS isso evoluiria naturalmente para CloudWatch (métricas de volume, latência e falha de ingestão) com alertas via SNS.
 
-## 💰 FinOps
+## FinOps
 
 - Parquet com compressão snappy em todas as camadas: menos storage, menos bytes escaneados
 - Particionamento por ano: as consultas leem só o que precisam
@@ -227,7 +264,7 @@ Na prática, a escolha na AWS não é cravar uma ferramenta só, é usar o servi
 
 Guardo o Spark no batch para o dia em que o volume realmente crescer. Quando esse dia chegar, a migração parte dos números que a versão em pandas já validou, porque trocar de ferramenta não pode mudar o resultado.
 
-## 🤖 Aplicação em IA
+## Aplicação em IA
 
 A Gold foi desenhada pensando em servir modelos, não só dashboards:
 
