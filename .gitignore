@@ -18,6 +18,13 @@ derby.log
 */_spark_metadata/
 */_checkpoint/
 
+# Terraform (state e tfvars podem conter segredos; o lock file é versionado)
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+terraform/*.tfvars
+!terraform/terraform.tfvars.example
+
 # Dados e logs locais (não versionar dados brutos, só código)
 data/
 logs/*.json

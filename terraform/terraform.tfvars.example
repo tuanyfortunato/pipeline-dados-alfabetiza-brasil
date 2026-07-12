@@ -1,0 +1,4 @@
+# Copie para terraform.tfvars e ajuste. O tfvars real é gitignorado.
+
+# nome global único - troque o sufixo pelo seu
+bucket_name = "alfabetiza-brasil-datalake-teste"
