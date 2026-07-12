@@ -12,6 +12,7 @@ import importlib
 import os
 import sys
 import tempfile
+import zipfile
 
 import boto3
 from awsglue.utils import getResolvedOptions
@@ -34,7 +35,12 @@ def main() -> None:
 
     zip_local = os.path.join(tempfile.gettempdir(), "src.zip")
     boto3.client("s3").download_file(args["lake_bucket"], "scripts/src.zip", zip_local)
-    sys.path.insert(0, zip_local)
+    # zipimport não enxerga namespace packages (o projeto não usa __init__.py), então
+    # extraímos e colocamos o DIRETÓRIO no path — import via filesystem, igual ao local
+    destino_src = os.path.join(tempfile.gettempdir(), "src_extraido")
+    with zipfile.ZipFile(zip_local) as z:
+        z.extractall(destino_src)
+    sys.path.insert(0, destino_src)
 
     # o main da bronze interpreta argv como lista de entidades; some com os args do Glue
     sys.argv = [sys.argv[0]]
