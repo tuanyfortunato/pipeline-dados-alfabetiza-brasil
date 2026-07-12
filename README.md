@@ -30,13 +30,13 @@ O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo ref
  FONTES                 │              DATA LAKE (LAKE_PATH)               │
 ┌────────────────────┐  │                                                  │
 │ BigQuery           │  │  ┌─────────┐    ┌──────────┐    ┌─────────┐      │
-│ (Base dos Dados)   │─▶│  │ BRONZE  │──▶│  SILVER  │──▶│  GOLD   │──────┼─▶ BI / ML
+│ (Base dos Dados)   │─>│  │ BRONZE  │──> │  SILVER  │──> │  GOLD   │──────┼─> BI / ML
 │ 6 entidades (batch)│  │  │ fiel à  │    │ limpo +  │    │ métricas│      │
 └────────────────────┘  │  │ fonte   │    │ integrado│    │ negócio │      │
                         │  └─────────┘    └──────────┘    └─────────┘      │
 ┌────────────────────┐  │       ▲              │                           │
 │ Simulador de       │  │       │              ▼                           │
-│ eventos (streaming)│─▶│   landing/     ┌──────────────┐                  │
+│ eventos (streaming)│─>│   landing/     ┌──────────────┐                  │
 └────────────────────┘  │   (raw JSON)   │ Data Quality │                  │
                         └──────────────────────────────────────────────────┘
 ```
