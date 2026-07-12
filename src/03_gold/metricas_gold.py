@@ -12,7 +12,6 @@ notebooks/laboratorio_gold.ipynb:
 Uso:
     python src/03_gold/metricas_gold.py
 """
-import os
 import sys
 from pathlib import Path
 
@@ -31,14 +30,11 @@ from src.utils.data_quality import (
     fail_if_critical,
     save_report,
 )
+from src.utils.lake import lake_path, preparar_diretorio
 from src.utils.logger import get_logger
 
 load_dotenv()
 logger = get_logger("gold.metricas")
-
-LAKE_PATH = os.environ.get("LAKE_PATH", "./data")
-SILVER = Path(LAKE_PATH) / "silver"
-GOLD = Path(LAKE_PATH) / "gold"
 
 # Ponto de corte da escala Saeb definido pela Pesquisa Alfabetiza Brasil (2023).
 CORTE_ALFABETIZACAO = 743
@@ -61,10 +57,13 @@ def eh_alfabetizado(proficiencia: pd.Series) -> pd.Series:
 
 def carregar_alunos() -> pd.DataFrame:
     alunos = pd.read_parquet(
-        SILVER / "alunos",
+        lake_path("silver", "alunos"),
         columns=["ano", "id_municipio", "sigla_uf", "rede_nome", "proficiencia",
                  "peso_aluno", "presente", "sem_nota"],
     )
+    # a partição Hive devolve o ano como categoria; int64 explícito porque no
+    # Windows astype(int) daria int32 e o contrato da Gold (e o Glue) é bigint
+    alunos["ano"] = alunos["ano"].astype("int64")
     alunos["tem_nota"] = alunos["presente"] & ~alunos["sem_nota"]
     # O peso só existe para presentes com nota, então as somas ponderadas
     # abaixo já ficam restritas ao denominador certo (validado no laboratório).
@@ -76,7 +75,9 @@ def carregar_alunos() -> pd.DataFrame:
 
 def agregar_indicador(df: pd.DataFrame, chaves: list[str]) -> pd.DataFrame:
     """Agrega volumetria e taxas ponderadas no grão pedido."""
-    g = df.groupby(chaves, dropna=False).agg(
+    # observed=True: só combinações que existem no dado — com chave categórica,
+    # o default do pandas 2.x geraria o produto cartesiano de grupos vazios
+    g = df.groupby(chaves, dropna=False, observed=True).agg(
         alunos_avaliados=("presente", "size"),
         alunos_presentes=("presente", "sum"),
         alunos_com_nota=("tem_nota", "sum"),
@@ -211,17 +212,17 @@ def rodar_dq(indicador: pd.DataFrame, confronto: pd.DataFrame, evolucao: pd.Data
     ]
 
 
-def escrever_tabela(df: pd.DataFrame, destino: Path) -> None:
+def escrever_tabela(df: pd.DataFrame, destino: str) -> None:
     # Arquivo único sobrescrito a cada execução: reprocessar é idempotente.
-    destino.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(destino / "data.parquet", index=False)
+    preparar_diretorio(destino)
+    df.to_parquet(f"{destino}/data.parquet", index=False)
 
 
 def main() -> None:
-    logger.info("Lendo a Silver de %s", SILVER)
+    logger.info("Lendo a Silver de %s", lake_path("silver"))
     alunos = carregar_alunos()
-    metas = pd.read_parquet(SILVER / "metas")
-    gabarito_municipio = pd.read_parquet(SILVER / "resultados" / "municipio")
+    metas = pd.read_parquet(lake_path("silver", "metas"))
+    gabarito_municipio = pd.read_parquet(lake_path("silver", "resultados", "municipio"))
 
     indicador = montar_indicador_municipio(alunos)
     confronto = montar_meta_vs_resultado(alunos, metas)
@@ -231,10 +232,10 @@ def main() -> None:
     report_path = save_report(checks, layer="gold")
     logger.info("DQ da Gold: %s", report_path)
 
-    logger.info("Escrevendo camada Gold em %s", GOLD)
-    escrever_tabela(indicador, GOLD / "indicador_municipio")
-    escrever_tabela(confronto, GOLD / "meta_vs_resultado")
-    escrever_tabela(evolucao, GOLD / "evolucao_temporal")
+    logger.info("Escrevendo camada Gold em %s", lake_path("gold"))
+    escrever_tabela(indicador, lake_path("gold", "indicador_municipio"))
+    escrever_tabela(confronto, lake_path("gold", "meta_vs_resultado"))
+    escrever_tabela(evolucao, lake_path("gold", "evolucao_temporal"))
 
     fail_if_critical(checks)
     logger.info("Gold concluída: %d municípios no indicador, %d linhas no confronto "
