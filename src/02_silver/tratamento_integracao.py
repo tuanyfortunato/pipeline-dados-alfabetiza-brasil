@@ -8,7 +8,6 @@ flags -> UF derivada -> quarentena -> checks formais -> escrita particionada.
 Uso:
     python src/02_silver/tratamento_integracao.py
 """
-import os
 import re
 import sys
 import unicodedata
@@ -31,15 +30,11 @@ from src.utils.data_quality import (
     fail_if_critical,
     save_report,
 )
+from src.utils.lake import existe, lake_path, preparar_diretorio
 from src.utils.logger import get_logger
 
 load_dotenv()
 logger = get_logger("silver.tratamento_integracao")
-
-LAKE_PATH = os.environ.get("LAKE_PATH", "./data")
-BRONZE = Path(LAKE_PATH) / "bronze" / "batch"
-BRONZE_STREAMING = Path(LAKE_PATH) / "bronze" / "streaming" / "eventos_indicador"
-SILVER = Path(LAKE_PATH) / "silver"
 
 # Os dois primeiros dígitos do código IBGE do município são o código da UF.
 # É tabela pública e estável desde os anos 70, então mantenho como constante.
@@ -65,7 +60,7 @@ def normaliza(texto) -> str:
 
 
 def carregar_bronze(entidade: str) -> pd.DataFrame:
-    return pd.read_parquet(BRONZE / entidade)
+    return pd.read_parquet(lake_path("bronze", "batch", entidade))
 
 
 def mapa_dicionario(dicionario: pd.DataFrame, tabela: str, coluna: str) -> dict:
@@ -159,11 +154,12 @@ def integrar_eventos_streaming(municipio: pd.DataFrame) -> None:
 
     É a junção do streaming com as bases batch. Só roda se houver eventos — sem
     eles, o fluxo batch segue igual."""
-    if not BRONZE_STREAMING.exists():
-        logger.info("sem eventos de streaming em %s; integração ignorada", BRONZE_STREAMING)
+    bronze_streaming = lake_path("bronze", "streaming", "eventos_indicador")
+    if not existe(bronze_streaming):
+        logger.info("sem eventos de streaming em %s; integração ignorada", bronze_streaming)
         return
 
-    eventos = pd.read_parquet(BRONZE_STREAMING)
+    eventos = pd.read_parquet(bronze_streaming)
     _para_inteiro(eventos, ["id_municipio"])
     eventos["ano"] = pd.to_numeric(eventos["ano"]).astype(int)
     _para_decimal(eventos, ["proficiencia_media"])
@@ -178,7 +174,7 @@ def integrar_eventos_streaming(municipio: pd.DataFrame) -> None:
                                     municipio, "id_municipio"),
     ]
     report_path = save_report(checks, layer="silver_streaming")
-    escrever_particionado(eventos, SILVER / "eventos_indicador", "ano")
+    escrever_particionado(eventos, lake_path("silver", "eventos_indicador"), "ano")
     logger.info("Eventos de streaming integrados: %d linhas. DQ: %s", len(eventos), report_path)
     fail_if_critical(checks)
 
@@ -204,19 +200,21 @@ def rodar_dq(alunos: pd.DataFrame, municipio: pd.DataFrame) -> list[dict]:
     ]
 
 
-def escrever_particionado(df: pd.DataFrame, destino: Path, particao: str) -> None:
-    destino.mkdir(parents=True, exist_ok=True)
+def escrever_particionado(df: pd.DataFrame, destino: str, particao: str) -> None:
+    preparar_diretorio(destino)
     tabela = pa.Table.from_pandas(df, preserve_index=False).replace_schema_metadata()
-    pq.write_to_dataset(tabela, str(destino), partition_cols=[particao])
+    # delete_matching limpa a partição antes de gravar: reprocessar não duplica
+    pq.write_to_dataset(tabela, destino, partition_cols=[particao],
+                        existing_data_behavior="delete_matching")
 
 
-def escrever_tabela(df: pd.DataFrame, destino: Path) -> None:
-    destino.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(destino / "data.parquet", index=False)
+def escrever_tabela(df: pd.DataFrame, destino: str) -> None:
+    preparar_diretorio(destino)
+    df.to_parquet(f"{destino}/data.parquet", index=False)
 
 
 def main() -> None:
-    logger.info("Lendo a Bronze de %s", BRONZE)
+    logger.info("Lendo a Bronze de %s", lake_path("bronze", "batch"))
     dicionario = carregar_bronze("dicionario")
     municipio = tratar_resultados(carregar_bronze("municipio"), "municipio")
     uf = tratar_resultados(carregar_bronze("uf"), "uf")
@@ -235,13 +233,13 @@ def main() -> None:
     report_path = save_report(checks, layer="silver")
     logger.info("DQ da Silver: %s", report_path)
 
-    logger.info("Escrevendo camada Silver em %s", SILVER)
-    escrever_particionado(alunos_limpos, SILVER / "alunos", "ano")
+    logger.info("Escrevendo camada Silver em %s", lake_path("silver"))
+    escrever_particionado(alunos_limpos, lake_path("silver", "alunos"), "ano")
     if len(quarentena):
-        escrever_particionado(quarentena, SILVER / "quarentena" / "alunos", "ano")
-    escrever_tabela(municipio, SILVER / "resultados" / "municipio")
-    escrever_tabela(uf, SILVER / "resultados" / "uf")
-    escrever_tabela(metas, SILVER / "metas")
+        escrever_particionado(quarentena, lake_path("silver", "quarentena", "alunos"), "ano")
+    escrever_tabela(municipio, lake_path("silver", "resultados", "municipio"))
+    escrever_tabela(uf, lake_path("silver", "resultados", "uf"))
+    escrever_tabela(metas, lake_path("silver", "metas"))
 
     fail_if_critical(checks)
     logger.info("Silver concluída: %d alunos, %d em quarentena, %d resultados municipais, "
