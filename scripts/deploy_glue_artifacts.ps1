@@ -1,6 +1,6 @@
-# Publica os artefatos dos Glue jobs no S3: o src.zip (código do pipeline) e o
-# wrapper. Rodar depois de qualquer mudança em src/ ou no wrapper — o job sempre
-# baixa a versão que estiver no bucket.
+# Publica os artefatos dos Glue jobs no S3: o src.zip (código do pipeline), o
+# wrapper do batch e o script do Glue Streaming. Rodar depois de qualquer mudança
+# em src/ ou nos scripts — o job sempre baixa a versão que estiver no bucket.
 
 $ErrorActionPreference = "Stop"
 $aws = if (Get-Command aws -ErrorAction SilentlyContinue) { "aws" }
@@ -27,5 +27,7 @@ Remove-Item $staging -Recurse -Force
 Write-Host "== Publicando no s3://$bucket/scripts/ =="
 & $aws s3 cp $zip "s3://$bucket/scripts/src.zip"
 & $aws s3 cp "$raiz\scripts\glue_job_batch.py" "s3://$bucket/scripts/glue_job_batch.py"
+# o Glue Streaming aponta o script_location direto pra este arquivo (nao usa src.zip)
+& $aws s3 cp "$raiz\src\01_bronze\ingestao_streaming_kinesis.py" "s3://$bucket/scripts/ingestao_streaming_kinesis.py"
 
 Write-Host "`n== Pronto =="
