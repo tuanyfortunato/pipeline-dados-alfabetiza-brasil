@@ -1,7 +1,8 @@
-# Credenciais GCP - NUNCA versionar
+# Credenciais GCP/AWS - NUNCA versionar
 credentials/
 *.json
 !docs/**/*.json
+.env
 
 # Ambiente Python
 .venv/

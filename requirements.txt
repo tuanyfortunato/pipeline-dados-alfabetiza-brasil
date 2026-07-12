@@ -1,11 +1,13 @@
-# Acesso ao BigQuery e Cloud Storage (sem precisar de Spark para testar)
-google-cloud-bigquery==3.25.0
-google-cloud-storage==2.18.2
+# Fonte (BigQuery / Base dos Dados)
+google-cloud-bigquery==3.42.2
+google-cloud-bigquery-storage==2.27.0
 db-dtypes==1.3.0
-pandas==2.2.3
 
-# Processamento distribuído (usado a partir da Fase 1 - Bronze)
+# Processamento e data lake
+pandas==2.2.3
+pyarrow==17.0.0
+boto3==1.35.36
+s3fs==2024.9.0
 pyspark==3.5.3
 
-# Leitura de variáveis de ambiente (.env local)
 python-dotenv==1.0.1
