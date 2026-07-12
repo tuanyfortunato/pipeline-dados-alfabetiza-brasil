@@ -1,0 +1,7 @@
+# Copie para terraform.tfvars e ajuste. O tfvars real é gitignorado.
+
+# nome global único - troque o sufixo pelo seu
+bucket_name = "alfabetiza-brasil-datalake-teste"
+
+# projeto GCP da extração do BigQuery (o mesmo do .env)
+gcp_project_id = "seu-project-id"

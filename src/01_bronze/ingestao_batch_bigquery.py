@@ -5,6 +5,7 @@ Uso:
     python src/01_bronze/ingestao_batch_bigquery.py            # todas as entidades
     python src/01_bronze/ingestao_batch_bigquery.py alunos uf  # apenas as citadas
 """
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -24,15 +25,16 @@ from src.utils.data_quality import (
     fail_if_critical,
     save_report,
 )
+from src.utils.lake import lake_path, preparar_diretorio
 from src.utils.logger import get_logger
 
 load_dotenv()
 logger = get_logger("bronze.ingestao_batch")
 
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
-LAKE_PATH = os.environ.get("LAKE_PATH", "./data")
 DATASET = "basedosdados.br_inep_avaliacao_alfabetizacao"
 QUERY_TIMEOUT_S = 300
+GCP_SECRET_ID = "alfabetiza/gcp-service-account"
 
 ENTITIES = {
     "alunos": {"required": ["ano", "id_municipio", "proficiencia"], "partition": "ano"},
@@ -43,6 +45,25 @@ ENTITIES = {
     "meta_alfabetizacao_municipio": {"required": ["ano", "id_municipio"], "partition": None},
     "dicionario": {"required": ["id_tabela", "nome_coluna", "chave"], "partition": None},
 }
+
+
+def criar_cliente_bigquery() -> bigquery.Client:
+    """Local, a credencial vem do .env (GOOGLE_APPLICATION_CREDENTIALS). Na AWS
+    não existe arquivo de chave: a service account fica no Secrets Manager e é
+    montada em memória."""
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return bigquery.Client(project=GCP_PROJECT_ID)
+
+    import boto3
+    from google.oauth2 import service_account
+
+    logger.info("credencial GCP via Secrets Manager (%s)", GCP_SECRET_ID)
+    segredo = boto3.client("secretsmanager").get_secret_value(SecretId=GCP_SECRET_ID)
+    credenciais = service_account.Credentials.from_service_account_info(
+        json.loads(segredo["SecretString"]),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    return bigquery.Client(project=GCP_PROJECT_ID, credentials=credenciais)
 
 
 def ingest_table(client: bigquery.Client, entity: str, config: dict, ingestion_ts: str) -> dict:
@@ -62,15 +83,17 @@ def ingest_table(client: bigquery.Client, entity: str, config: dict, ingestion_t
         check_required_columns(df, entity, config["required"]),
     ]
 
-    output_dir = Path(LAKE_PATH) / "bronze" / "batch" / entity
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = lake_path("bronze", "batch", entity)
+    preparar_diretorio(output_dir)
     if config["partition"] and config["partition"] in df.columns:
         # escrita via pyarrow sem o metadata do pandas: o Int64 anulável que o
         # BigQuery devolve quebra o read_parquet de dataset particionado
         table = pa.Table.from_pandas(df, preserve_index=False).replace_schema_metadata()
-        pq.write_to_dataset(table, str(output_dir), partition_cols=[config["partition"]])
+        # delete_matching limpa a partição antes de gravar: reprocessar não duplica
+        pq.write_to_dataset(table, output_dir, partition_cols=[config["partition"]],
+                            existing_data_behavior="delete_matching")
     else:
-        df.to_parquet(output_dir / "data.parquet", index=False)
+        df.to_parquet(f"{output_dir}/data.parquet", index=False)
 
     logger.info("%s: salvo em %s", entity, output_dir)
     return {"entity": entity, "rows": len(df), "checks": checks}
@@ -82,7 +105,7 @@ def main() -> None:
     if unknown:
         raise SystemExit(f"Entidades desconhecidas: {unknown}. Válidas: {list(ENTITIES)}")
 
-    client = bigquery.Client(project=GCP_PROJECT_ID)
+    client = criar_cliente_bigquery()
     ingestion_ts = datetime.now(timezone.utc).isoformat()
 
     # uma entidade com problema não derruba as demais; falhas são
