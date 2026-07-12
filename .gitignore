@@ -5,10 +5,18 @@ credentials/
 .env
 
 # Ambiente Python
-.venv/
+.venv*/
 venv/
 __pycache__/
 *.pyc
+
+# Spark / Hadoop (ambiente local de streaming)
+tools/
+spark-warehouse/
+metastore_db/
+derby.log
+*/_spark_metadata/
+*/_checkpoint/
 
 # Dados e logs locais (não versionar dados brutos, só código)
 data/
