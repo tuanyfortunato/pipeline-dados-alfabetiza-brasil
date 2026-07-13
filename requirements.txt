@@ -11,3 +11,7 @@ s3fs==2024.9.0
 pyspark==3.5.3
 
 python-dotenv==1.0.1
+
+# Notebooks (só o desenvolvimento local usa; os Glue jobs instalam a própria lista)
+matplotlib==3.11.0
+ipykernel==7.3.0
