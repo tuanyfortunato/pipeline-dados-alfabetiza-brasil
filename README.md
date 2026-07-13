@@ -45,7 +45,7 @@ O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo ref
 
 **🥈 Silver** - limpeza e integração: conversão de tipos (proficiência vira decimal, códigos IBGE viram inteiro), decodificação dos códigos pelo dicionário da fonte, padronização do vocabulário de rede (um rótulo só, do resultado à meta), flags de ausência (`presente`, `sem_nota`), derivação da UF a partir do código do município e o empilhamento das metas numa estrutura única. É aqui que roda a suite formal de qualidade - e onde entra a **quarentena**: registro que reprova (ex.: município órfão da dimensão) é separado em `silver/quarentena/` com o motivo, em vez de sumir num filtro ou derrubar a esteira.
 
-**🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`, com a taxa ponderada pelo peso amostral - o recálculo fecha com o gabarito oficial com mediana de 0,004pp) e três tabelas prontas para consumo: indicador por município, meta × resultado (com gap e flag de atingimento) e evolução temporal por recorte geográfico e rede. O esquema é rígido e está documentado em `docs/dicionario_dados_gold.md`.
+**🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`, com a taxa ponderada pelo peso amostral - o recálculo fecha com o gabarito oficial com mediana de 0,004pp) e cinco tabelas prontas para consumo: indicador por município, meta × resultado, evolução temporal, perfil da escola e distribuição de proficiência. **Toda taxa vem acompanhada da própria margem de erro** (`ic95`) - sem ela, o confronto com a meta não significa nada em 45% dos municípios, onde o gap é menor que a incerteza do indicador. O esquema é rígido e está documentado em `docs/dicionario_dados_gold.md`.
 
 A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e streaming para atualizações em tempo quase real - eventos JSON caem numa pasta landing e o Spark Structured Streaming os consome para a Bronze. O passo a passo está em [Rodar o streaming](#rodar-o-streaming) e o porquê da arquitetura, em [Decisões arquiteturais](#️-decisões-arquiteturais).
 
@@ -87,7 +87,7 @@ A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e stre
 │   ├── 02_silver/
 │   │   └── tratamento_integracao.py # limpeza, padronização e integração das entidades
 │   └── 03_gold/
-│       └── metricas_gold.py         # regra dos 743 + as 3 tabelas analíticas
+│       └── metricas_gold.py         # regra dos 743 + as 5 tabelas analíticas
 ├── notebooks/
 │   ├── exploracao_bronze.ipynb      # EDA da Bronze (perfil, nulos, corte 743, chaves)
 │   ├── laboratorio_silver.ipynb     # prototipagem das transformações da Silver
@@ -164,9 +164,11 @@ Ele lê a Bronze e grava a camada tratada em `data/silver/` - `alunos/` (partici
 python src/03_gold/metricas_gold.py
 ```
 
-Ele lê a Silver e grava em `data/gold/` as três tabelas analíticas: `indicador_municipio/` (10,4 mil linhas), `meta_vs_resultado/` (com gap e flag de atingimento) e `evolucao_temporal/` (33,4 mil linhas, por recorte geográfico e rede). O relatório sai em `logs/dq_gold_<timestamp>.json` - na base atual, score de ~94% com um único *warning*: o check que confronta o recálculo com o gabarito oficial e acusa 45 municípios divergentes conhecidos (0,4%, quase todos de 2023 - detalhes no dicionário de dados). Uma prova real: a taxa Brasil 2024 recalculada dá **59,2** - exatamente o número oficial.
+Ele lê a Silver e grava em `data/gold/` as cinco tabelas analíticas: `indicador_municipio/` (10,4 mil linhas), `meta_vs_resultado/` (gap, `ic95` e a `situacao_meta`), `evolucao_temporal/` (33,4 mil linhas, por recorte geográfico e rede), `perfil_escola/` (79,3 mil linhas - o grão que faltava) e `distribuicao_proficiencia/` (33,4 mil linhas, com os 9 níveis oficiais do INEP e as faixas de negócio). O relatório sai em `logs/dq_gold_<timestamp>.json` - na base atual, score de ~94% com dois *warnings*, ambos do mesmo grupo de municípios pequenos: o recálculo da taxa diverge do gabarito em 45 municípios (0,4%) e a distribuição por nível estoura a tolerância em 1,15% das células. Uma prova real: a taxa Brasil 2024 recalculada dá **59,2** - exatamente o número oficial.
 
-7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale). Todos estão versionados já executados, dá para ler direto no GitHub.
+Dois números que só existem porque essas tabelas existem: **75% da variação da proficiência está entre alunos da mesma escola** (o município, grão em que a política pactua meta, explica 16%), e **metade das crianças não alfabetizadas do país está em 195 municípios** - sem nenhuma sobreposição com os 50 de pior taxa. Percentual esconde volume; a coluna `criancas_nao_alfabetizadas` desfaz isso.
+
+7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale) e, na Parte 2, sonda as visões que deram origem às tabelas novas - incluindo a descoberta dos pontos de corte dos 9 níveis do INEP, que a fonte publica sem a régua. Todos estão versionados já executados, dá para ler direto no GitHub.
 
 ### Rodar o streaming
 
