@@ -1,124 +1,337 @@
 # Pipeline Híbrido para Análise da Alfabetização no Brasil
 
-Projeto do Tech Challenge (Fase 2 - Pós Tech). A ideia é construir um pipeline de dados completo, seguindo a arquitetura Medalhão, para integrar as bases do **Indicador Criança Alfabetizada** e conseguir responder perguntas como: quantas crianças estão de fato alfabetizadas ao final do 2º ano? Quais municípios estão longe da meta?
+Tech Challenge — Fase 2, Pós Tech.
+
+Este repositório constrói um pipeline de dados completo (batch + streaming, arquitetura Medalhão, rodando na AWS) em cima das bases do **Indicador Criança Alfabetizada**. O objetivo não é só mover dado de um lugar para outro: é chegar numa camada analítica em que dá para confiar no número — e saber exatamente onde ele não pode ser usado.
+
+---
 
 ## Contexto do problema
 
 O **Compromisso Nacional Criança Alfabetizada** é a política pública que estabelece que, até 2030, toda criança brasileira deve estar alfabetizada ao final do 2º ano do ensino fundamental.
 
-Mas como medir "estar alfabetizada"? Em 2023 o INEP realizou a Pesquisa Alfabetiza Brasil e definiu um corte objetivo: **743 pontos na escala de proficiência do Saeb**. Quem atinge esse patamar é considerado alfabetizado, e o percentual de alunos acima do corte forma o Indicador Criança Alfabetizada.
+Mas o que é "estar alfabetizada"? Sem um critério objetivo, a política não teria como ser medida nem cobrada. Em 2023 o INEP realizou a Pesquisa Alfabetiza Brasil e fixou um corte: **743 pontos na escala de proficiência do Saeb**. Quem atinge esse patamar é considerado alfabetizado, e o percentual de crianças acima do corte é o **Indicador Criança Alfabetizada**.
 
-O desafio de engenharia está no fato de que essas informações vivem em bases separadas: microdados por aluno, metas nacionais, estaduais e municipais, cadastros de território. Este pipeline integra tudo isso em uma camada analítica confiável.
+É esse indicador que este pipeline calcula, e é em cima dele que cada município tem uma meta pactuada, ano a ano, até 2030.
 
-Os dados vêm da [Base dos Dados](https://basedosdados.org/dataset/073a39d4-89cf-4068-b1e8-34ed0d9c0b72?table=e1de7a6a-5038-4e81-89f0-a15f2cc12c9b), que publica o dataset no BigQuery (`basedosdados.br_inep_avaliacao_alfabetizacao`). São 6 entidades:
+> **Traduzindo: o que é a escala Saeb?**
+> Não é uma nota de 0 a 10, nem uma porcentagem de acertos. É uma escala própria, construída para comparar alunos que fizeram provas diferentes. Na avaliação do 2º ano, as notas da base vão de **578 a 904** — o corte de 743 fica no meio dela. Isso importa mais do que parece: quem tenta usar aqui os cortes de outras avaliações do Saeb (como o "nível crítico" de 500 pontos, que vem da prova do 5º e 9º ano) classifica **zero** crianças, porque nessa escala ninguém tira menos de 578.
+
+O desafio de engenharia está em que essas informações vivem separadas: microdados por aluno de um lado, metas nacionais, estaduais e municipais de outro, resultados agregados publicados em terceiro. Nenhuma dessas bases sozinha responde "quantas crianças estão alfabetizadas, onde, e a que distância da meta". O pipeline existe para integrá-las.
+
+### As fontes
+
+Tudo vem da [Base dos Dados](https://basedosdados.org/dataset/073a39d4-89cf-4068-b1e8-34ed0d9c0b72?table=e1de7a6a-5038-4e81-89f0-a15f2cc12c9b), que publica o dataset no BigQuery (`basedosdados.br_inep_avaliacao_alfabetizacao`). São as 6 entidades pedidas no enunciado, mais o dicionário de códigos da própria fonte:
 
 | Entidade | O que tem | Tamanho |
 |---|---|---|
-| `alunos` | Microdados por aluno (proficiência, rede, localização) | 3,87 mi de linhas |
-| `municipio` | Resultados por município | ~24 mil |
-| `uf` | Resultados por estado | 145 |
-| `meta_alfabetizacao_brasil` | Metas nacionais | 3 |
-| `meta_alfabetizacao_uf` | Metas por estado | 81 |
-| `meta_alfabetizacao_municipio` | Metas por município | ~10 mil |
+| `alunos` | microdados por aluno: proficiência, rede, escola, peso amostral | 3,87 mi de linhas |
+| `municipio` | resultados oficiais por município — o **gabarito** do projeto | ~24 mil |
+| `uf` | resultados oficiais por estado | 145 |
+| `meta_alfabetizacao_brasil` | metas nacionais | 3 |
+| `meta_alfabetizacao_uf` | metas por estado | 81 |
+| `meta_alfabetizacao_municipio` | metas por município | ~10 mil |
+| `dicionario` | de-para dos códigos (rede, presença, série) | 27 |
 
-## Arquitetura
+A tabela `municipio` merece destaque, porque ela muda o modo de trabalhar: como o INEP já publica a taxa oficial por município, dá para **recalcular o indicador do zero e conferir se bate**. Nenhuma decisão de cálculo neste projeto foi opinião — todas foram testadas contra esse gabarito.
 
-O pipeline segue a **arquitetura Medalhão**: o dado entra bruto e vai sendo refinado em camadas, sempre preservando as versões anteriores. Se algo aparecer errado lá na ponta, dá para voltar camada por camada e descobrir se o problema veio de uma transformação ou se já estava na fonte.
+---
+
+## A arquitetura
+
+### Diagrama da pipeline
 
 ```
-                        ┌──────────────────────────────────────────────────┐
- FONTES                 │              DATA LAKE (LAKE_PATH)               │
-┌────────────────────┐  │                                                  │
-│ BigQuery           │  │  ┌─────────┐    ┌──────────┐    ┌─────────┐      │
-│ (Base dos Dados)   │─>│  │ BRONZE  │──> │  SILVER  │──> │  GOLD   │──────┼─> BI / ML
-│ 6 entidades (batch)│  │  │ fiel à  │    │ limpo +  │    │ métricas│      │
-└────────────────────┘  │  │ fonte   │    │ integrado│    │ negócio │      │
-                        │  └─────────┘    └──────────┘    └─────────┘      │
-┌────────────────────┐  │       ▲              │                           │
-│ Simulador de       │  │       │              ▼                           │
-│ eventos (streaming)│─>│   landing/     ┌──────────────┐                  │
-└────────────────────┘  │   (raw JSON)   │ Data Quality │                  │
-                        └──────────────────────────────────────────────────┘
+   FONTES                        INGESTÃO                    DATA LAKE (S3 / ./data)                CONSUMO
+┌──────────────┐          ┌───────────────────┐     ┌──────────────────────────────────────┐
+│   BigQuery   │  batch   │  Glue Python Shell│     │  ┌────────┐  ┌────────┐  ┌────────┐  │    ┌──────────┐
+│ (Base dos    │─────────>│  ingestao_batch   │────>│  │ BRONZE │─>│ SILVER │─>│  GOLD  │──┼───>│  Athena  │──> BI
+│  Dados)      │          │  _bigquery.py     │     │  │ fiel à │  │ limpo +│  │ 5 tab. │  │    │  (SQL)   │
+│ 7 entidades  │          └───────────────────┘     │  │ fonte  │  │integrad│  │ negócio│  │    └──────────┘
+└──────────────┘                    ▲               │  └────────┘  └────────┘  └────────┘  │
+                                    │               │       ▲          │            │      │    ┌──────────┐
+┌──────────────┐          ┌───────────────────┐     │       │          ▼            └──────┼───>│  ML /    │
+│  Producer    │streaming │  Glue Streaming   │     │  landing/   ┌──────────────┐         │    │  Feature │
+│  (simula     │─────────>│  (Spark Struct.   │────>│  (JSON cru) │ Data Quality │         │    │  Store   │
+│  sistema     │ Kinesis  │   Streaming)      │     │             │  logs/*.json │         │    └──────────┘
+│  externo)    │          └───────────────────┘     └──────────────────────────────────────┘
+└──────────────┘
+
+   ORQUESTRAÇÃO:  Step Functions (bronze → silver → gold, .sync, para na 1ª falha)
+                  EventBridge (agenda semanal, criada DISABLED de propósito)
 ```
 
-**🥉 Bronze** - cópia fiel da fonte, sem nenhum filtro de negócio. Salvo em Parquet com três colunas extras de rastreabilidade: `_ingestion_ts` (quando foi ingerido), `_source` (tabela de origem) e `_row_hash` (identificador do conteúdo da linha, útil para detectar mudanças). A tabela `alunos` fica particionada por ano (`ano=2023/`, `ano=2024/`), então quem consulta um ano só não paga o custo de ler os outros.
+### Fluxo de dados, passo a passo
 
-**🥈 Silver** - limpeza e integração: conversão de tipos (proficiência vira decimal, códigos IBGE viram inteiro), decodificação dos códigos pelo dicionário da fonte, padronização do vocabulário de rede (um rótulo só, do resultado à meta), flags de ausência (`presente`, `sem_nota`), derivação da UF a partir do código do município e o empilhamento das metas numa estrutura única. É aqui que roda a suite formal de qualidade - e onde entra a **quarentena**: registro que reprova (ex.: município órfão da dimensão) é separado em `silver/quarentena/` com o motivo, em vez de sumir num filtro ou derrubar a esteira.
+1. **Extração.** O job da Bronze consulta as 7 entidades no BigQuery e grava cada uma em Parquet, sem nenhum filtro de negócio. A credencial do GCP vem do **Secrets Manager** (na nuvem) ou de um arquivo local (no desenvolvimento).
+2. **Rastreabilidade.** Cada linha ganha três colunas: `_ingestion_ts` (quando entrou), `_source` (de onde veio) e `_row_hash` (impressão digital do conteúdo, para detectar mudança silenciosa na fonte).
+3. **Limpeza e integração.** A Silver converte tipos, decodifica os códigos pelo dicionário da própria fonte, padroniza o vocabulário de rede (um rótulo só, do microdado até a meta), deriva a UF a partir do código IBGE do município e empilha as três tabelas de metas numa estrutura única.
+4. **Quarentena.** Registro que reprova na régua (por exemplo, um município que não existe na dimensão) **não é descartado nem derruba a esteira**: vai para `silver/quarentena/` com o motivo anotado, para auditoria.
+5. **Regra de negócio.** A Gold aplica `alfabetizado = proficiencia >= 743`, calcula as taxas e materializa as cinco tabelas analíticas.
+6. **Consumo.** As tabelas Gold ficam registradas no catálogo do Glue e são consultadas via **Athena** em SQL puro.
 
-**🥇 Gold** - regra de negócio (`alfabetizado = proficiencia >= 743`, com a taxa ponderada pelo peso amostral - o recálculo fecha com o gabarito oficial com mediana de 0,004pp) e cinco tabelas prontas para consumo: indicador por município, meta × resultado, evolução temporal, perfil da escola e distribuição de proficiência. **Toda taxa vem acompanhada da própria margem de erro** (`ic95`) - sem ela, o confronto com a meta não significa nada em 45% dos municípios, onde o gap é menor que a incerteza do indicador. O esquema é rígido e está documentado em `docs/dicionario_dados_gold.md`.
+Em paralelo, o **streaming** simula um sistema externo mandando novas medições: o producer publica eventos no **Kinesis**, um **Glue Streaming job** (Spark Structured Streaming) consome e materializa na mesma Bronze, e a Silver junta esses eventos às bases batch — que é onde as duas metades da ingestão de fato se encontram.
 
-A ingestão é **híbrida**: batch para as cargas históricas do BigQuery e streaming para atualizações em tempo quase real - eventos JSON caem numa pasta landing e o Spark Structured Streaming os consome para a Bronze. O passo a passo está em [Rodar o streaming](#rodar-o-streaming) e o porquê da arquitetura, em [Decisões arquiteturais](#️-decisões-arquiteturais).
+### As três camadas
 
-### Status atual
+**🥉 Bronze — cópia fiel da fonte.** Sem filtro, sem regra de negócio, sem "limpeza". Se a fonte tem lixo, a Bronze tem lixo — e é isso mesmo: quando um número der estranho lá na frente, quero poder voltar aqui e provar se o problema nasceu na fonte ou numa transformação minha. A tabela `alunos` é particionada por ano, então quem consulta 2024 não paga para ler 2023.
 
-| Etapa | Situação |
+**🥈 Silver — limpo e integrado.** É onde as bases heterogêneas viram um conjunto coerente: tipos, códigos decodificados, vocabulário unificado, chaves normalizadas, flags de ausência (`presente`, `sem_nota`) e a quarentena. A suíte formal de qualidade roda aqui.
+
+**🥇 Gold — as respostas.** Cinco tabelas, com esquema rígido documentado em [`docs/dicionario_dados_gold.md`](docs/dicionario_dados_gold.md):
+
+| Tabela | Grão | Responde |
+|---|---|---|
+| `indicador_municipio` | ano × município | quantas crianças estão alfabetizadas, e onde |
+| `meta_vs_resultado` | ano × nível × recorte | quem está longe da meta pactuada |
+| `evolucao_temporal` | ano × recorte × rede | como o indicador se move no tempo |
+| `perfil_escola` | ano × escola | quais escolas superam (ou ficam abaixo) do próprio contexto |
+| `distribuicao_proficiencia` | ano × recorte × rede | onde as crianças estão na escala, não só se passaram do corte |
+
+**Toda taxa vem acompanhada da própria margem de erro** (`ic95`). Isso não é preciosismo estatístico: em **45% dos municípios com meta pactuada**, a diferença entre o resultado e a meta é menor que a incerteza do próprio indicador. Sem essa coluna, a Gold estava publicando ruído com cara de fato.
+
+---
+
+## O que o pipeline descobriu
+
+Um pipeline que só move dado não prova nada. Estes são os achados que saíram da camada analítica — todos reproduzíveis em [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb), que registra o caminho inteiro, inclusive as ideias que não sobreviveram ao teste.
+
+**O indicador municipal explica 16% da variação.** Decompondo a variância da proficiência: 16% está entre municípios, 9% entre escolas do mesmo município e **75% entre alunos da mesma escola**. O município — grão em que a política pactua meta, publica ranking e decide repasse — responde por um sexto da diferença. Foi esse número que motivou a tabela `perfil_escola`.
+
+**O mapa das piores taxas não é o mapa das crianças.** Metade de todas as crianças não alfabetizadas do país está em **195 municípios** (3,5% do total). E a sobreposição entre "os 50 municípios com pior taxa" e "os 50 com mais crianças fora" é **zero**. Percentual esconde volume; priorizar por taxa aponta para municípios pequenos, priorizar por volume aponta para as capitais.
+
+**Município pequeno não tem taxa ruim — tem taxa incerta.** 544 municípios têm menos de 30 alunos avaliados, com margem de erro média de ±17,6pp. Qualquer ranking feito sem olhar o tamanho enche o topo e o fundo da lista com ruído estatístico.
+
+**A régua dos 9 níveis do INEP estava escondida.** A fonte publica a distribuição dos alunos por nível (`proporcao_aluno_nivel_0..8`), mas o dicionário **não publica os pontos de corte**. Derivei por quantis ponderados e validei município a município: é uma grade de 25 em 25 pontos a partir de 650, com erro mediano de **0,003pp** em 5.516 municípios. Virou tabela e virou check de qualidade permanente.
+
+**Existe um contingente enorme logo abaixo do corte.** Se todas as crianças a 10 pontos da linha a cruzassem, a taxa nacional iria de 59,2% para **67,0%**.
+
+---
+
+## Tecnologias, e por que cada uma
+
+| Tecnologia | Onde | Por quê |
+|---|---|---|
+| **Python + pandas** | Bronze, Silver e Gold (batch) | o volume cabe em memória com folga (284 MB, 3,87 mi de linhas); Spark aqui só adicionaria JVM, shuffle e latência |
+| **google-cloud-bigquery** | extração | lê direto da fonte, sem download manual de arquivo |
+| **Parquet** | todas as camadas | colunar, comprimido, tipagem forte, e lido por Spark, Athena, DuckDB ou o que vier |
+| **PySpark (Structured Streaming)** | Glue Streaming job | aqui o Spark não é enfeite: resolve micro-batch, schema, checkpoint e tolerância a falha |
+| **AWS S3** | data lake | storage barato, versionado, com lifecycle |
+| **AWS Glue** | execução | Python Shell no batch (pandas puro), Streaming no Kinesis |
+| **Step Functions + EventBridge** | orquestração | encadeia as camadas e guarda a agenda |
+| **Kinesis Data Streams** | fila de eventos | log de eventos de verdade, reprocessável |
+| **Athena** | consumo | SQL sobre o lake, serverless, sem cluster ligado |
+| **Secrets Manager** | credencial do GCP | na nuvem não existe arquivo de chave |
+| **Terraform** | infraestrutura | toda a infra é código versionado, nada criado no console |
+
+---
+
+## Decisões arquiteturais
+
+**Batch, streaming, ou os dois?** Os dois, porque resolvem problemas diferentes. As cargas históricas do INEP — microdados, metas, municípios — são grandes e mudam poucas vezes por ano: batch é o natural, processa o lote inteiro de uma vez. Já novas medições e revisões de meta são onde compensa reagir rápido, e é aí que entra o streaming. Mantive os dois separados desde a Bronze (`bronze/batch/` e `bronze/streaming/`) para poder reprocessar um lado sem encostar no outro. Só batch perderia o quase-tempo-real que o problema pede; só streaming pagaria complexidade à toa em cargas que são naturalmente periódicas.
+
+**Data lake ou data warehouse?** Considerei resolver tudo num warehouse (Redshift, ou o próprio BigQuery que já é a fonte) e escrever SQL. Fiquei com data lake em S3 por dois motivos: os microdados já são 3,87 milhões de linhas e crescem a cada onda da pesquisa — storage barato em Parquet pesa mais que a conveniência do SQL —, e o formato colunar aberto não me prende a fornecedor. O warehouse não sai de cena, só troca de lado: as tabelas Gold ficam expostas via **Athena**, que dá a experiência de warehouse (SQL, catálogo, BI) sem manter cluster nenhum ligado. Na prática: lake para armazenar e refinar, warehouse serverless só na ponta do consumo.
+
+**Custo ou performance?** Nesse volume dá para ter os dois, então otimizei custo sem sacrificar tempo de resposta perceptível. Parquet particionado faz a consulta ler só a fatia que interessa (menos byte escaneado = menos conta no Athena), a Bronze é materializada uma vez e todo o resto parte dela em vez de bater na fonte de novo, e nada fica ligado 24/7. Se a base crescer a ponto de a performance apertar, o caminho é subir um cluster Spark (Glue/EMR) sob demanda — pago mais em troca de paralelismo, mas como escolha consciente, não como padrão.
+
+**pandas ou Spark?** Os dois, cada um no seu lugar. O Spark só começa a compensar lá pelas dezenas de GB; abaixo disso, o custo de subir cluster costuma deixar o job mais lento e mais caro que um pandas bem escrito. E cada nova onda da pesquisa soma ~3,9 mi de linhas por ano — levaria muito tempo até o volume pedir processamento distribuído. Por isso Bronze, Silver e Gold rodam em pandas (como Glue Python Shell job), e o Spark fica no streaming, onde a escolha não vem do volume e sim da natureza do problema. A regra que me guia: **trocar de ferramenta não pode mudar o resultado** — quando a migração vier, ela parte dos números que a versão em pandas já validou.
+
+**Por que AWS, se a fonte está no BigQuery?** Usar GCP para tudo evitaria um hop de extração. Concentrei o lake na AWS pelo peso do ecossistema S3/Glue/Athena no mercado e por manter governança e custo num provedor só. O hop custa pouco: a extração roda uma vez por carga e cabe no free tier de 1 TB/mês do BigQuery.
+
+**Desenvolver local, promover para a nuvem depois.** O `LAKE_PATH` aponta para `./data` no desenvolvimento e para `s3://<bucket>` na nuvem — o helper [`src/utils/lake.py`](src/utils/lake.py) resolve os dois. A estrutura de pastas local espelha exatamente o bucket. Ganho velocidade de iteração e não pago nuvem enquanto erro.
+
+**Cadê a camada raw?** Algumas arquiteturas separam raw (formato original) de Bronze (Parquet + metadados). Como a fonte é um warehouse, não existe "arquivo original" a preservar — a Bronze já nasce sendo a cópia fiel. No streaming a história é outra: a pasta `landing/` guarda o JSON exatamente como chegou, fazendo o papel de raw.
+
+**E o SQS, já que a nuvem é AWS?** Foi a pergunta que mais me fez pesquisar. Como *fonte* de dados o SQS não encaixa: é fila de tarefas, não log de eventos. A leitura é destrutiva (consumiu, some), então não dá para reprocessar histórico nem garantir ordem — que é justo o que o checkpoint do streaming pressupõe. Onde o SQS ajudaria é como *campainha* ("chegou arquivo novo no S3"), evitando varrer o bucket. No meu volume, listar é instantâneo, então não paga a complexidade. Para streaming de verdade, o caminho é Kinesis (o equivalente ao Kafka na AWS).
+
+---
+
+## Qualidade de dados
+
+Os checks vivem em [`src/utils/data_quality.py`](src/utils/data_quality.py) e rodam **nas três camadas**, cobrindo o que o enunciado pede:
+
+| Dimensão | O que verifica | Exemplo real |
+|---|---|---|
+| **Completude** | o dado está presente? | base não vazia; sem nulos em colunas-chave |
+| **Validade** | formato e faixa corretos? | proficiência dentro da escala; código IBGE com 7 dígitos |
+| **Unicidade** | sem duplicata indevida | `(ano, id_aluno)` é único; `(ano, id_escola)` é único |
+| **Consistência** | os campos batem entre si? | aluno ausente não pode ter nota; todo `id_municipio` existe na dimensão |
+| **Integridade referencial** | as chaves de relacionamento fecham? | município da Gold existe na Silver |
+
+Cada check tem um de três desfechos: **pass**, **warning** (fica registrado, não derruba o pipeline) ou **fail** (aborta a execução — dado ruim não segue adiante em silêncio). Toda execução grava um relatório JSON em `logs/` com o score e o detalhe de cada verificação.
+
+O check mais importante do projeto não é genérico: é o que **confronta o recálculo com o gabarito oficial** a cada execução. A taxa que a Gold calcula tem que reproduzir a que o INEP publica (mediana de 0,004pp de diferença), e os 9 níveis recalculados têm que reproduzir as colunas oficiais (mediana de 0,003pp). Se a fonte revisar um número, o check acusa.
+
+**Por que não Great Expectations ou Soda?** Para o volume e o número de regras deste projeto, um módulo próprio de ~130 linhas cobre as mesmas dimensões sem adicionar dependência pesada — e me obrigou a entender cada validação em vez de configurar YAML. Num cenário com dezenas de fontes, migrar para uma dessas ferramentas seria o caminho natural.
+
+---
+
+## Monitoramento
+
+O que existe hoje, e é o que sustenta a operação:
+
+- **Log estruturado** em todos os scripts: início, fim, volume processado por entidade, e o caminho do relatório de DQ.
+- **Relatórios de qualidade** persistidos (`logs/dq_<camada>_<timestamp>.json` local, `s3://<bucket>/logs/` na nuvem) — dão o histórico de score e o detalhe de cada check ao longo do tempo.
+- **CloudWatch Logs** recebe automaticamente a saída dos Glue jobs (foi lendo esse log que descobri, por exemplo, que a Bronze havia gravado 3,9 mi de registros com sucesso).
+- **Step Functions** encadeia as camadas com `.sync` e **para na primeira falha** — não existe Silver rodando sobre uma Bronze que quebrou.
+- **Falha de ingestão é explícita**: `DataQualityError` aborta a execução, e o job aparece como `FAILED` no console do Glue.
+
+O que **não** está implementado, e seria o próximo passo: alarme no CloudWatch com notificação por **SNS** (e-mail em falha de job ou queda de score), e métrica customizada de latência do pipeline. Registro isso como lacuna consciente em vez de descrever como feito.
+
+---
+
+## FinOps
+
+As decisões que reduzem custo, e o efeito de cada uma:
+
+| Decisão | Efeito |
 |---|---|
-| Ingestão batch → Bronze | ✅ pronto |
-| Silver (limpeza + integração) | ✅ pronto |
-| Gold (métricas de negócio) | ✅ pronto |
-| Data quality com relatório | ✅ pronto (em todas as camadas) |
-| Streaming local (producer + consumer Spark de pasta) | ✅ pronto |
-| Infra AWS como código (S3 + Glue catálogo + Athena) | ✅ pronto (Terraform) |
-| Código cloud-ready (`lake_path`, credencial via Secrets Manager) | ✅ pronto |
-| Batch na AWS (3 Glue jobs + Step Functions + EventBridge) | ✅ pronto (Terraform) |
-| Streaming na AWS (Kinesis + Glue Streaming) | ✅ pronto (Terraform) |
+| **Parquet + compressão** em todas as camadas | menos storage, menos byte escaneado no Athena |
+| **Particionamento por ano** | consulta de 2024 não lê 2023 |
+| **pandas em vez de Spark no batch** | Glue Python Shell a 1 DPU, contra um cluster Spark mínimo de 2 DPU G.1X |
+| **Bronze materializada uma vez** | a fonte não é re-consultada a cada experimento |
+| **Nada ligado 24/7** | S3 e Athena são serverless; Glue cobra só enquanto roda |
+| **Agenda EventBridge criada `DISABLED`** | agenda ativa em conta de lab = job rodando sem ninguém olhando o crédito |
+| **Limite de scan no workgroup do Athena** (1 GB/query) | trava de custo: uma query mal escrita não escaneia o lake inteiro |
+| **Lifecycle no S3** | `bronze/` migra para STANDARD_IA em 30 dias e Glacier em 90 |
+| **`scripts/aws_desligar.ps1`** | destrói o Kinesis (cobra por shard-hora só de existir) ao fim da sessão |
 
-## 📂 Estrutura do repositório
+### A conta, com números medidos
+
+Preços de lista de `us-east-1`, aplicados aos tempos de execução reais dos jobs:
+
+| Item | Cálculo | Custo |
+|---|---|---|
+| Glue batch (bronze 76s + silver 94s + gold 58s, 1 DPU) | 228s × 1 DPU × US$ 0,44/DPU-h | **US$ 0,03 por execução completa** |
+| Mesma esteira, semanal | ~4,3 execuções/mês | **US$ 0,12/mês** |
+| S3 (284 MB nas três camadas) | 0,28 GB × US$ 0,023/GB-mês | **US$ 0,01/mês** |
+| Athena (Gold inteira = 3,6 MB) | US$ 5,00/TB escaneado | **< US$ 0,01** por query |
+
+**Operação em regime: menos de US$ 0,20/mês.**
+
+O custo real não está no batch — está no streaming, e por isso ele é o único item com disciplina de desligamento:
+
+| Item | Custo |
+|---|---|
+| Glue Streaming (2 × G.1X) | **US$ 0,88/hora enquanto roda** |
+| Kinesis (1 shard) | **US$ 0,015/hora só de existir**, mesmo parado |
+| Uma demo de 30 min | **~US$ 0,45** |
+
+Daí a regra: a demo é cronometrada e termina com `./scripts/aws_desligar.ps1`, que encerra as execuções, para os job runs e **destrói o stream** (o `aws_ligar.ps1` recria via `terraform apply`). O Glue Streaming job ainda tem `timeout` de 60 min como rede de segurança, caso alguém esqueça.
+
+---
+
+## Aplicação em IA
+
+A Gold foi desenhada para servir modelo, não só dashboard — mas a parte mais útil desta seção é o que a **sondagem do dado provou que não dá para fazer**. Prometer feature que não existe é como um projeto de IA morre.
+
+### O que dá para construir
+
+**1. Predição de risco de não atingir a meta de 2030 (nível município).**
+Alvo: `atingiu_meta` ou o `gap` de `meta_vs_resultado`. Features: o indicador defasado, a taxa de participação, o perfil de distribuição nos 9 níveis, o déficit absoluto, e — como enriquecimento externo — contexto socioeconômico do IBGE por `id_municipio` (PIB per capita, densidade demográfica, alfabetização adulta). O `id_municipio` é código IBGE de verdade, então esse join funciona.
+
+**2. Clusters de vulnerabilidade educacional.**
+A `distribuicao_proficiencia` dá o formato da curva de cada município, não só a média — dois municípios com a mesma taxa podem ter distribuições completamente diferentes, e é isso que separa "todo mundo perto do corte" de "uma metade bem e outra muito mal". É a base natural para agrupamento não supervisionado.
+
+**3. Feature store no nível do aluno.**
+Alvo: `proficiencia` (regressão) ou `alfabetizado` (classificação). Features: rede, contexto da escola e contexto do município. Aqui moram **dois vazamentos de alvo** que precisam ser tratados no desenho, não depois:
+
+- *Vazamento pela escola.* A média da escola calculada com todos os alunos **inclui o próprio aluno** — o modelo lê o alvo pela porta dos fundos e o resultado vira ilusão. A correção é *leave-one-out*: `(soma_da_escola − nota_do_aluno) / (n − 1)`.
+- *Vazamento pelo tempo.* O contexto municipal precisa vir do **ano anterior**. Como a base tem só duas ondas (2023 e 2024), isso significa que **só 2024 tem features defasadas** — o conjunto treinável de verdade é um ano só.
+
+**4. Identificação de escolas que superam o contexto.**
+A coluna `residuo` de `perfil_escola` já é, na prática, um modelo de valor agregado simplificado: compara a escola com o próprio município, controlando contexto socioeconômico e gestão. **2.085 escolas estão 20pp acima do próprio município.** Um modelo mais completo entraria por aqui.
+
+### O que a base NÃO permite — e por quê
+
+Isto vale tanto quanto a lista de cima, porque evita que a próxima pessoa gaste uma semana numa análise impossível:
+
+| Ideia que parece óbvia | Por que não dá |
+|---|---|
+| Juntar com o **Censo Escolar** (urbano/rural, infraestrutura) | `id_escola` é **pseudônimo**, não o código INEP. Testei contra as 222.589 escolas do Censo: **interseção zero** |
+| Acompanhar o **mesmo aluno** entre anos (modelo longitudinal) | `id_aluno` é sorteado de novo a cada ano. Dos que aparecem nos dois, só 0,1% caem na mesma escola. O join não dá erro — só mente |
+| Comparar **escola pública × privada** | a rede privada não existe nesta base: 25 alunos em 2024, zero em 2023 |
+| Feature de **evolução** ("quem mais melhorou") | regressão à média: a correlação entre a taxa de 2023 e o avanço é **−0,45**. Seria uma feature de "quem teve mais azar no ano anterior" |
+
+### Política pública baseada em evidência
+
+O que a camada analítica entrega para decisão, hoje:
+
+- **Onde intervir por volume**, não por taxa — os 195 municípios que concentram metade das crianças fora da alfabetização (e que **não** aparecem no ranking das piores taxas).
+- **Onde o esforço rende mais** — a coluna `pct_quase_la`: +7,8pp na taxa nacional se as crianças a 10 pontos do corte cruzassem a linha.
+- **Onde a comparação é honesta** — a `situacao_meta` marca como `indistinguivel` os 45% de municípios em que o gap para a meta é menor que a margem de erro. Cobrar um prefeito por uma diferença que é ruído estatístico é injusto e caro.
+- **Onde já existe solução funcionando** — as escolas com resíduo positivo alto, no mesmo contexto de vizinhas que vão mal.
+
+---
+
+## Estrutura do repositório
 
 ```
 ├── README.md
 ├── requirements.txt
-├── .env.example                     # modelo de configuração (copiar para .env)
+├── .env.example                          # modelo de configuração (copiar para .env)
 ├── docs/
-│   ├── ambiente_spark.md            # como montar o ambiente do streaming (venv 3.11, Java, winutils)
-│   └── dicionario_dados_gold.md     # contrato das tabelas Gold (esquema + avisos de fonte)
+│   └── dicionario_dados_gold.md          # contrato das tabelas Gold: esquema + avisos de fonte
+├── terraform/                            # toda a infra como código
+│   ├── main.tf                           # S3 (versionado, criptografado, lifecycle), IAM
+│   ├── glue_batch.tf                     # 3 Glue jobs + Step Functions + EventBridge
+│   ├── glue_streaming.tf                 # Kinesis + Glue Streaming job
+│   ├── athena.tf                         # catálogo Glue + workgroup com trava de custo
+│   └── README.md                         # contexto do Learner Lab e decisões de infra
 ├── scripts/
-│   └── test_bigquery_connection.py  # smoke test da credencial
+│   ├── test_bigquery_connection.py       # smoke test da credencial
+│   ├── glue_job_batch.py                 # wrapper que roda uma camada dentro do Glue
+│   ├── deploy_glue_artifacts.ps1         # publica o código (src.zip) no S3
+│   ├── aws_ligar.ps1 / aws_desligar.ps1  # controle de custo da sessão do lab
 ├── src/
 │   ├── utils/
-│   │   ├── logger.py                # logging padrão dos scripts
-│   │   ├── data_quality.py          # checks de qualidade reutilizáveis
-│   │   └── spark_session.py         # sessão Spark local, usada pelo streaming
+│   │   ├── lake.py                       # caminhos do lake: ./data local, s3:// na nuvem
+│   │   ├── data_quality.py               # checks de qualidade reutilizáveis
+│   │   ├── logger.py                     # logging padrão
+│   │   └── spark_session.py              # sessão Spark (streaming)
 │   ├── streaming/
-│   │   └── producer_eventos.py      # simulador: gera eventos JSON na pasta landing
+│   │   └── producer_eventos.py           # simula sistema externo: --destino pasta | kinesis
 │   ├── 01_bronze/
-│   │   ├── ingestao_batch_bigquery.py
-│   │   └── ingestao_streaming_consumer.py  # Spark lê a landing e materializa na Bronze
+│   │   ├── ingestao_batch_bigquery.py    # BigQuery -> Bronze
+│   │   ├── ingestao_streaming_kinesis.py # Kinesis -> Bronze (Glue Streaming, nuvem)
+│   │   └── ingestao_streaming_consumer.py# pasta landing -> Bronze (variante local)
 │   ├── 02_silver/
-│   │   └── tratamento_integracao.py # limpeza, padronização e integração das entidades
+│   │   └── tratamento_integracao.py      # limpeza, padronização e integração
 │   └── 03_gold/
-│       └── metricas_gold.py         # regra dos 743 + as 5 tabelas analíticas
+│       └── metricas_gold.py              # regra dos 743 + as 5 tabelas analíticas
 ├── notebooks/
-│   ├── exploracao_bronze.ipynb      # EDA da Bronze (perfil, nulos, corte 743, chaves)
-│   ├── laboratorio_silver.ipynb     # prototipagem das transformações da Silver
-│   └── laboratorio_gold.ipynb       # sondagem das decisões da Gold (peso, denominador, metas)
-├── data/                            # data lake local (gerado na execução, fora do Git)
-└── logs/                            # relatórios de qualidade (gerados na execução)
+│   ├── exploracao_bronze.ipynb           # EDA da Bronze
+│   ├── laboratorio_silver.ipynb          # prototipagem das transformações da Silver
+│   └── laboratorio_gold.ipynb            # o laboratório: 4 atos, do cálculo aos achados
+├── data/                                 # data lake local (gerado; fora do Git)
+└── logs/                                 # relatórios de qualidade (gerados; fora do Git)
 ```
 
-Se você está lendo o código pela primeira vez, sugiro começar pelo `test_bigquery_connection.py` (10 linhas, mostra como falamos com a fonte), depois os utils, e daí seguir os números das pastas: `01_bronze` → `02_silver` → `03_gold`. Os números são a própria ordem de execução do pipeline.
+Se você está lendo o código pela primeira vez: comece por `scripts/test_bigquery_connection.py` (mostra como falamos com a fonte), depois `src/utils/`, e daí siga os números das pastas — `01_bronze` → `02_silver` → `03_gold` é a própria ordem de execução.
+
+E se quiser entender **por que** o código é como é, o caminho é [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb). Ele está versionado já executado (com os gráficos), dá para ler direto no GitHub.
+
+---
 
 ## Como executar
 
-### O que você precisa antes
+### Pré-requisitos
 
-- Python 3.11 (a mesma versão usada nos dois ambientes do projeto)
-- Um projeto no Google Cloud (o cadastro é gratuito) com a **BigQuery API** habilitada. O dataset é público, mas as consultas rodam por dentro do seu projeto - o free tier de 1 TB/mês cobre com folga
+- Python 3.11
+- Um projeto no Google Cloud com a **BigQuery API** habilitada. O dataset é público, mas as consultas rodam por dentro do seu projeto — o free tier de 1 TB/mês cobre com folga
 - Uma Service Account com papel `BigQuery User` e a chave JSON baixada
 
-### Passo a passo
-
-1. Clone o repositório e prepare o ambiente:
+### Local
 
 ```powershell
 git clone https://github.com/tuanyfortunato/pipeline-dados-alfabetiza-brasil.git
 cd pipeline-dados-alfabetiza-brasil
 python -m venv .venv
-.venv\Scripts\Activate.ps1        # no Linux/Mac: source .venv/bin/activate
+.venv\Scripts\Activate.ps1        # Linux/Mac: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. Crie a pasta `credentials/` na raiz e coloque a chave JSON da Service Account dentro dela. Depois copie o `.env.example` para `.env` e preencha:
+Crie a pasta `credentials/`, coloque a chave JSON dentro, copie `.env.example` para `.env` e preencha:
 
 ```ini
 GOOGLE_APPLICATION_CREDENTIALS=./credentials/sua-chave.json
@@ -126,199 +339,69 @@ GCP_PROJECT_ID=seu-project-id
 LAKE_PATH=./data
 ```
 
-Tanto `credentials/` quanto `.env` estão no `.gitignore` - nada disso sobe para o Git.
+`credentials/` e `.env` estão no `.gitignore` — nada disso sobe para o Git.
 
-3. Teste a conexão:
-
-```powershell
-python scripts/test_bigquery_connection.py
-```
-
-Se aparecer `Conexão OK. 10 linhas retornadas.` com uma prévia da tabela de alunos, está tudo certo.
-
-4. Rode a ingestão Bronze:
+Depois é seguir a ordem das camadas:
 
 ```powershell
-# todas as entidades (leva ~1 min)
-python src/01_bronze/ingestao_batch_bigquery.py
-
-# ou só algumas
-python src/01_bronze/ingestao_batch_bigquery.py uf municipio
-```
-
-No final você vai ter os Parquet em `data/bronze/batch/<entidade>/` e um relatório de qualidade em `logs/dq_bronze_<timestamp>.json`, com score e o detalhe de cada check.
-
-Se um check crítico falhar (base vazia, coluna obrigatória faltando), o script para com `DataQualityError`. Isso é proposital: dado ruim não segue adiante em silêncio.
-
-5. Rode o tratamento da Silver:
-
-```powershell
+python scripts/test_bigquery_connection.py     # confere a credencial
+python src/01_bronze/ingestao_batch_bigquery.py   # ~1 min; aceita entidades como argumento
 python src/02_silver/tratamento_integracao.py
-```
-
-Ele lê a Bronze e grava a camada tratada em `data/silver/` - `alunos/` (particionado por ano), `quarentena/alunos/`, `resultados/municipio` e `resultados/uf`, e `metas/` (as três tabelas empilhadas). No fim sai um relatório em `logs/dq_silver_<timestamp>.json`. Na base atual são 3,87 mi de alunos tratados, 410 linhas em quarentena e score de qualidade de ~91% (o único ponto de atenção fica como *warning*, não derruba o pipeline).
-
-6. Rode as métricas da Gold:
-
-```powershell
 python src/03_gold/metricas_gold.py
 ```
 
-Ele lê a Silver e grava em `data/gold/` as cinco tabelas analíticas: `indicador_municipio/` (10,4 mil linhas), `meta_vs_resultado/` (gap, `ic95` e a `situacao_meta`), `evolucao_temporal/` (33,4 mil linhas, por recorte geográfico e rede), `perfil_escola/` (79,3 mil linhas - o grão que faltava) e `distribuicao_proficiencia/` (33,4 mil linhas, com os 9 níveis oficiais do INEP e as faixas de negócio). O relatório sai em `logs/dq_gold_<timestamp>.json` - na base atual, score de ~94% com dois *warnings*, ambos do mesmo grupo de municípios pequenos: o recálculo da taxa diverge do gabarito em 45 municípios (0,4%) e a distribuição por nível estoura a tolerância em 1,15% das células. Uma prova real: a taxa Brasil 2024 recalculada dá **59,2** - exatamente o número oficial.
+Cada passo grava um relatório em `logs/dq_<camada>_<timestamp>.json`. Números da base atual:
 
-Dois números que só existem porque essas tabelas existem: **75% da variação da proficiência está entre alunos da mesma escola** (o município, grão em que a política pactua meta, explica 16%), e **metade das crianças não alfabetizadas do país está em 195 municípios** - sem nenhuma sobreposição com os 50 de pior taxa. Percentual esconde volume; a coluna `criancas_nao_alfabetizadas` desfaz isso.
+| Camada | Resultado | Score de DQ |
+|---|---|---|
+| Bronze | 3,9 mi de registros, 7 entidades | — |
+| Silver | 3,87 mi de alunos tratados, 410 linhas em quarentena | ~91% |
+| Gold | 10,4 mil municípios · 79,3 mil escolas · 5 tabelas | ~94% (2 *warnings*) |
 
-7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale) e, na Parte 2, sonda as visões que deram origem às tabelas novas - incluindo a descoberta dos pontos de corte dos 9 níveis do INEP, que a fonte publica sem a régua. Todos estão versionados já executados, dá para ler direto no GitHub.
+Os dois *warnings* da Gold são o mesmo grupo de municípios muito pequenos, e estão documentados no dicionário de dados. Uma prova de que o cálculo está certo: **a taxa Brasil 2024 recalculada dá 59,2 — exatamente o número oficial.**
 
-### Rodar o streaming
+### Na AWS
 
-O batch acima cobre as cargas históricas. O streaming é a outra metade da ingestão: em vez de ler um lote inteiro de uma vez, ele reage a eventos que vão pingando - novas medições e revisões de meta do indicador.
-
-Para não depender de um serviço pago só para mostrar o conceito, o streaming aqui é baseado em arquivos. Um script fica escrevendo eventos JSON numa pasta (a *landing*), e o Spark fica de olho nessa pasta e processa cada arquivo novo que aparece. Do ponto de vista do Spark isso é streaming de verdade - com schema, micro-batch e checkpoint -, só que a "fila" é uma pasta. O raciocínio completo dessa escolha está lá embaixo, em [Decisões arquiteturais](#️-decisões-arquiteturais).
-
-Um detalhe de ambiente antes de rodar: o PySpark 3.5 só vai até o Python 3.11, e o resto do projeto usa uma versão mais nova. Para não mexer no que já funciona, o streaming vive num venv à parte, o `.venv-spark`. Como montá-lo (Python 3.11, JDK 17 e os binários do Hadoop no Windows) está em `docs/ambiente_spark.md` - é setup de uma vez só.
-
-Com o `.venv-spark` pronto, são três passos:
-
-1. Ligue o **producer** num terminal. Ele gera os eventos e vai gravando na landing:
-
-```powershell
-python src/streaming/producer_eventos.py --lotes 5 --eventos 3 --intervalo 2
-```
-
-Cada lote vira um arquivo `data/bronze/streaming/landing/evento_<timestamp>.json`. Ele escreve primeiro num arquivo temporário e só renomeia no fim - assim o Spark nunca lê um arquivo pela metade. Com `--lotes 0` ele fica gerando sem parar (Ctrl+C encerra).
-
-2. Rode o **consumer**, esse sim no `.venv-spark`. Ele lê a landing como stream e materializa os eventos em Parquet na Bronze, com os mesmos metadados de rastreabilidade do batch:
-
-```powershell
-.venv-spark\Scripts\python.exe src/01_bronze/ingestao_streaming_consumer.py
-```
-
-Por padrão ele processa o que estiver na landing e encerra - mais fácil de demonstrar e de gravar. Com `--continuo` ele fica escutando a pasta e reprocessando a cada 10s. O checkpoint em `data/bronze/streaming/_checkpoint/` guarda o que já foi lido, então rodar de novo não duplica evento nenhum.
-
-3. Rode a **Silver de novo**. Ela detecta os eventos em `bronze/streaming/`, valida contra a dimensão de municípios e junta na camada tratada, em `silver/eventos_indicador/`. Se não houver streaming nenhum, a Silver roda igual à do batch - a integração é opcional e não trava a esteira. É aqui que o streaming e as bases batch de fato se encontram.
-
-## Rodar na AWS
-
-Todo o pipeline também roda **dentro da AWS**, provisionado como código em `terraform/`. O ambiente é um Learner Lab da AWS Academy (região fixa `us-east-1`, credencial temporária, tudo assume a `LabRole`) - o contexto e as decisões estão em `terraform/README.md`.
-
-Ponto de partida (uma vez por sessão do lab):
+Toda a infra é provisionada por Terraform. O ambiente é um **Learner Lab da AWS Academy** (região fixa `us-east-1`, credencial temporária de ~4h, tudo assume a `LabRole`) — o contexto está em [`terraform/README.md`](terraform/README.md).
 
 ```powershell
 cd terraform
 terraform init
-terraform apply                 # cria S3, Glue catálogo, Athena, jobs, Step Functions, Kinesis
+terraform apply                        # S3, Glue catálogo, Athena, jobs, Step Functions, Kinesis
 cd ..
-./scripts/deploy_glue_artifacts.ps1   # sobe o código (src.zip + wrappers) pro S3
+./scripts/deploy_glue_artifacts.ps1    # publica o código (src.zip) no S3
 ```
 
-### Batch na AWS (Glue + Step Functions + EventBridge)
-
-Cada camada vira um **Glue Python Shell job** (`alfabetiza-batch-bronze/silver/gold`, pandas puro - a decisão local vale na nuvem), a **Step Functions** encadeia `bronze → silver → gold` (cada passo `.sync`, para na primeira falha) e o **EventBridge** guarda a agenda semanal, criada `DISABLED` de propósito (agenda ativa em conta de lab = job rodando sem ninguém olhando o crédito). Demo:
+**Batch:** cada camada é um Glue Python Shell job (`alfabetiza-batch-bronze/silver/gold` — o mesmo código do local, sem fork), encadeados por Step Functions:
 
 ```powershell
 aws stepfunctions start-execution --state-machine-arn <state_machine_arn do terraform output>
 ```
 
-### Streaming na AWS (Kinesis + Glue Streaming)
-
-O mesmo streaming do modo local, agora com fila gerenciada de verdade: o producer publica no **Kinesis Data Stream** `alfabetiza-eventos` e um **Glue Streaming job** (Spark Structured Streaming, `format("kinesis")`) consome e materializa na Bronze do S3 - mesmo schema, mesmos metadados de rastreabilidade, mesmo destino do consumer local de pasta.
+**Streaming:** o producer publica no Kinesis e o Glue Streaming job consome:
 
 ```powershell
-# 1. dispara o Glue Streaming job (fica lendo o Kinesis)
 aws glue start-job-run --job-name alfabetiza-streaming-kinesis
-
-# 2. num terminal, o producer publica eventos no stream
 python src/streaming/producer_eventos.py --destino kinesis --lotes 0
-
-# 3. confira o Parquet nascendo em s3://<bucket>/bronze/streaming/eventos_indicador/
+# o Parquet nasce em s3://<bucket>/bronze/streaming/eventos_indicador/
 ```
 
-> ⚠️ **Custo:** o Glue Streaming cobra por DPU-hora **enquanto roda** (~US$ 0,88/h) e o Kinesis por shard-hora só de existir. O job tem `timeout` de 60 min como rede de segurança, mas a disciplina é rodar a demo cronometrada (~15-30 min) e **parar tudo** no fim com `./scripts/aws_desligar.ps1` (encerra execuções, para os job runs e destrói o stream; o `aws_ligar.ps1` recria via `terraform apply`).
+> ⚠️ **Custo:** o streaming é o único item caro (US$ 0,88/h + Kinesis por shard-hora). Rode a demo cronometrada e **encerre com `./scripts/aws_desligar.ps1`**.
 
-O producer continua local de propósito: ele *simula um sistema externo*, e sistema externo não roda dentro do pipeline - manda eventos pra borda (o Kinesis) via `boto3`. Como alternativa FinOps, se o requisito fosse só aterrissar eventos no lake, um Firehose → S3 faria isso sem código; mantemos o Glue Streaming porque o desafio valoriza o Spark - trade-off consciente.
+O producer continua rodando local de propósito: ele *simula um sistema externo*, e sistema externo não roda dentro do pipeline — manda eventos para a borda (o Kinesis) via `boto3`.
 
-## Qualidade de dados
+**Consumo:** as cinco tabelas Gold estão registradas no catálogo do Glue e são consultadas em SQL no Athena, no workgroup `alfabetiza-gold` (com limite de 1 GB por query como trava de custo).
 
-Os checks (em `src/utils/data_quality.py`) cobrem as quatro dimensões clássicas:
+---
 
-- **Completude** - o dado está presente? (base não vazia, nulos em colunas-chave)
-- **Validade** - formato e faixa corretos? (ex.: proficiência dentro da escala Saeb)
-- **Consistência** - os campos fazem sentido entre si? (ex.: todo `id_municipio` dos alunos existe na dimensão município)
-- **Unicidade** - sem duplicatas indevidas nas chaves
+## Sobre o versionamento
 
-Além das quatro dimensões, o módulo valida formato (regex nos códigos IBGE), consistência linha a linha entre campos (ex.: aluno ausente não pode ter nota) e completude contra threshold. Cada check tem um de três desfechos: **pass**, **warning** (fica registrado, não derruba o pipeline - caso dos raros presentes sem nota) ou **fail** (aborta a execução).
+O histórico do repositório acompanha a evolução do pipeline: uma **branch por frente** (`feature/silver`, `feature/gold`, `feature/streaming`, `feature/infra-aws`, `feature/cloud-batch`, `feature/cloud-streaming`, `feature/gold-visoes`), integradas por **Pull Request**, com a descrição justificando as escolhas. As mensagens de commit registram o *porquê* da mudança, não só o *o quê* — é lá que ficam as decisões que não cabem no código.
 
-Toda execução gera um relatório JSON em `logs/` com o score. Na Silver entra também a estratégia de quarentena: registro reprovado é separado para análise em vez de descartado (ou de travar a esteira inteira).
+---
 
-Por que não usei Great Expectations ou Soda? Para o volume e o número de regras deste projeto, um módulo próprio de ~100 linhas cobre as mesmas dimensões sem adicionar dependência pesada - e me obrigou a entender cada validação em vez de configurar YAML. Num cenário corporativo com dezenas de fontes, migrar para uma dessas ferramentas seria o caminho natural.
+## Autora
 
-## Tecnologias
-
-- **Python + pandas** na ingestão e nas transformações Bronze e Silver - o volume atual (268 MB, 3,87 mi de linhas) cabe tranquilo em memória, então preferi a simplicidade
-- **google-cloud-bigquery** para extração direto da fonte, sem download manual de arquivo
-- **Parquet** em todas as camadas - colunar, comprimido e com tipagem forte
-- **PySpark (Structured Streaming)** no consumer que lê a landing (local) e no Glue Streaming job que lê o Kinesis (nuvem) - e reservado para quando o volume do batch exigir escala distribuída
-- **AWS** (via Terraform) como destino e execução na nuvem: **S3** (data lake), **Glue** (Python Shell no batch, Streaming no Kinesis), **Step Functions + EventBridge** (orquestração e agenda), **Kinesis Data Streams** (fila de eventos), **Athena** (consumo da Gold) e **Secrets Manager** (credencial do BigQuery)
-
-## Decisões arquiteturais
-
-Algumas escolhas que fiz e o raciocínio por trás delas:
-
-**Por que AWS, se a fonte está no BigQuery?** Usar GCP para tudo evitaria um hop de extração, é verdade. Mas concentrei o data lake na AWS pelo peso do ecossistema S3/Athena/Glue no mercado e por manter governança e custo num provedor só. O hop custa pouco: a extração roda uma vez por carga e cabe no free tier do BigQuery.
-
-**Desenvolver local primeiro, promover para a nuvem depois.** O `LAKE_PATH` aponta para `./data` durante o desenvolvimento e a estrutura de pastas espelha exatamente o futuro bucket S3. Quando a lógica estiver validada, a promoção é trocar uma variável de ambiente. Ganho velocidade de iteração e não pago nuvem enquanto erro.
-
-**Cadê a camada raw?** Algumas arquiteturas separam raw (formato original) de Bronze (Parquet + metadados). Como a minha fonte é um warehouse, não existe um "arquivo original" para preservar - a Bronze já nasce sendo a cópia fiel, sem filtro de negócio. No streaming a história é outra: lá a pasta `landing/` guarda o JSON exatamente como chegou, fazendo o papel de raw.
-
-**pandas ou Spark?** Os dois, cada um no seu lugar. O volume atual (268 MB, 3,87 mi de linhas) cabe em memória com folga, então Bronze e Silver rodam em pandas - menos setup e iteração bem mais rápida, inclusive nos joins entre as entidades. O Spark fica reservado para onde realmente agrega: o streaming estruturado e o dia em que o volume crescer a ponto de exigir processamento distribuído. A regra que me guia é que trocar de ferramenta não pode mudar o resultado - então, quando a migração vier, ela parte dos números que a Silver em pandas já validou.
-
-**Batch, streaming ou os dois?** Os dois, porque resolvem coisas diferentes. As cargas históricas do INEP - microdados, metas, municípios - são grandes e mudam poucas vezes por ano; aí batch é o natural, roda de tempos em tempos e processa o lote inteiro de uma vez. Já a chegada de novas medições ou revisões de meta é onde compensa reagir rápido, e é onde entra o streaming (simulado com eventos JSON caindo numa pasta landing). Deixei os dois separados desde a Bronze (`bronze/batch/` e `bronze/streaming/`) para não misturar a origem e poder reprocessar um lado sem encostar no outro. Se fosse só batch, perderia o "quase tempo real" que o problema pede; se fosse só streaming, pagaria complexidade à toa nas cargas que são naturalmente periódicas.
-
-**Fila gerenciada ou arquivos numa pasta?** Streaming de manual pede uma fila - Kafka, Kinesis. No desenvolvimento local não fui por aí, e o motivo era custo: o Kinesis não tem free tier, e a ideia era demonstrar o padrão sem pagar por vazão que não vou usar. Fui de *file streaming*: os eventos caem como JSON numa pasta landing e o Spark Structured Streaming consome essa pasta. Continua sendo streaming legítimo do lado do Spark - schema explícito, micro-batch, checkpoint, capacidade de reprocessar. Na nuvem, com o crédito do ambiente acadêmico, a objeção de custo cai e o desenho vira o de mercado: o producer publica no **Kinesis Data Stream** via `boto3.put_records` (`--destino kinesis`) e um **Glue Streaming job** consome do Kinesis materializando na mesma Bronze do S3. As duas fontes - pasta (dev) e Kinesis (nuvem) - convivem no repo apontando pro mesmo destino; o conceito do lado do Spark é idêntico, muda só a origem (`format("kinesis")`) e onde executa. Detalhes na [seção da AWS](#streaming-na-aws-kinesis--glue-streaming).
-
-**E o SQS, já que a nuvem é AWS?** Foi a pergunta que mais me fez pesquisar, então deixo registrado por quê não. Como *fonte* de dados o SQS não encaixa: o Spark não tem conector nativo, mas o fundo é conceitual - SQS é fila de tarefas, não log de eventos. A leitura é destrutiva (consumiu, a mensagem some), então não dá para reprocessar um histórico nem garantir ordem, que é justo o que o checkpoint do streaming pressupõe. Onde o SQS realmente ajudaria nesse desenho é como *campainha*: o S3 avisa "chegou arquivo novo" por evento e o consumer vai buscar, em vez de ficar varrendo o bucket - é o truque que o Auto Loader do Databricks usa para escalar. No meu volume, listar a pasta é instantâneo, então não paga a complexidade. Se um dia isso virasse streaming de verdade, com alta vazão e tempo real, o caminho seria Kinesis (o equivalente ao Kafka na AWS), com o SQS no máximo nesse papel de aviso - nunca carregando o dado sozinho.
-
-**Data lake ou data warehouse?** Cheguei a considerar jogar tudo num data warehouse (Redshift, ou o próprio BigQuery que já é a fonte) e resolver no SQL. Fiquei com data lake em S3 por dois motivos: os microdados de aluno já são 3,87 milhões de linhas e crescem a cada nova onda da pesquisa - storage barato em Parquet pesa mais que a conveniência do SQL - e o formato colunar aberto não me prende a um fornecedor: hoje leio com Spark, amanhã com Athena, DuckDB ou o que vier. O warehouse não sai de cena, só troca de lado: as tabelas Gold ficam expostas via Athena, que me dá a experiência de warehouse (SQL, catálogo, BI) sem manter cluster nenhum ligado. Na prática, lake para armazenar e refinar, "warehouse" serverless só na ponta do consumo.
-
-**Custo ou performance?** Nesse volume dá para ter os dois, então otimizei custo sem sacrificar tempo de resposta perceptível. Parquet particionado faz a consulta ler só a fatia que interessa (menos byte escaneado = menos conta no Athena e menos espera), a Bronze é materializada uma vez e todo o resto parte dela em vez de bater na fonte de novo, e nada fica ligado 24/7 - desenvolvimento local e, na nuvem, S3 e Athena são serverless. Se um dia a base crescer a ponto de a performance apertar, o caminho é subir um cluster Spark (Glue/EMR) sob demanda: aí sim pago mais em troca de paralelismo, mas como escolha consciente para quando o volume justificar, não como padrão.
-
-## 📡 Monitoramento
-
-Todos os scripts logam início/fim e volume processado por entidade, e os relatórios de qualidade ficam persistidos em `logs/`. Em produção na AWS isso evoluiria naturalmente para CloudWatch (métricas de volume, latência e falha de ingestão) com alertas via SNS.
-
-## FinOps
-
-- Parquet com compressão snappy em todas as camadas: menos storage, menos bytes escaneados
-- Particionamento por ano: as consultas leem só o que precisam
-- A Bronze é materializada uma vez e todo o resto parte dela - a fonte não é re-consultada a cada experimento
-- Nenhum cluster ligado: desenvolvimento local, e na nuvem S3/Athena são serverless
-- Lifecycle planejado no S3: Bronze migra para armazenamento frio depois de N dias
-
-A estimativa de custo mensal da arquitetura completa fica na casa de **US$ 0 a 3** (detalho a conta na promoção para a AWS).
-
-### pandas ou Spark quando subir para a AWS?
-
-Essa foi a decisão de custo × performance que mais me fez pensar, então deixo o raciocínio registrado. Pelo volume, não tem muito o que discutir: a maior tabela tem 3,87 mi de linhas e 268 MB - cabe em memória com sobra. O Spark só começa a valer a pena lá pelas dezenas de GB ou centenas de milhões de linhas; abaixo disso, o custo de subir cluster, o shuffle e a JVM costumam deixar o job mais lento e mais caro do que um pandas bem escrito. E mesmo crescendo, cada nova onda da pesquisa soma ~3,9 mi de linhas por ano - levaria muito tempo até o volume pedir processamento distribuído.
-
-Na prática, a escolha na AWS não é cravar uma ferramenta só, é usar o serviço certo em cada etapa:
-
-- **Bronze e Silver (batch)** seguem em pandas, rodando como Glue Python Shell job (ou Lambda nos passos mais leves), lendo e escrevendo direto no S3. É basicamente trocar o `LAKE_PATH` local por um caminho `s3://` - o código quase não muda, e o custo fica na casa de centavos por execução.
-- **Streaming** é onde o Spark entra de verdade, com Structured Streaming: aí ele não é enfeite, resolve micro-batches, checkpoint e tolerância a falha. Repara que aqui a escolha não vem do volume, e sim da natureza do problema.
-- **Gold** hoje roda em pandas junto com o resto do batch, mas na nuvem pode dispensar os dois: com os dados já em Parquet no S3, as agregações do indicador saem em SQL no Athena - serverless e por uma fração de centavo do que é escaneado.
-
-Guardo o Spark no batch para o dia em que o volume realmente crescer. Quando esse dia chegar, a migração parte dos números que a versão em pandas já validou, porque trocar de ferramenta não pode mudar o resultado.
-
-## Aplicação em IA
-
-A Gold foi desenhada pensando em servir modelos, não só dashboards:
-
-- **Predição de alfabetização por município**: cruzando o indicador com features socioeconômicas, dá para prever quais municípios não vão atingir a meta de 2030 e priorizar intervenção
-- **Clusters de vulnerabilidade educacional**: agrupar municípios por perfil de desempenho × meta × território
-- **Política pública baseada em evidência**: o meta × resultado por recorte geográfico vira um ranking objetivo de onde investir
-
-## 👩‍💻 Autora
-
-**Tuany Fortunato do Carmo** - Tech Challenge Fase 2, Pós Tech.
+**Tuany Fortunato do Carmo** — Tech Challenge Fase 2, Pós Tech.
 
 Vídeo executivo: link será adicionado na entrega final.
