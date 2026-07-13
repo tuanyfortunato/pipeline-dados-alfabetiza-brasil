@@ -41,25 +41,9 @@ A tabela `municipio` merece destaque, porque ela muda o modo de trabalhar: como 
 
 ### Diagrama da pipeline
 
-```
-   FONTES                        INGESTÃO                    DATA LAKE (S3 / ./data)                CONSUMO
-┌──────────────┐          ┌───────────────────┐     ┌──────────────────────────────────────┐
-│   BigQuery   │  batch   │  Glue Python Shell│     │  ┌────────┐  ┌────────┐  ┌────────┐  │    ┌──────────┐
-│ (Base dos    │─────────>│  ingestao_batch   │────>│  │ BRONZE │─>│ SILVER │─>│  GOLD  │──┼───>│  Athena  │──> BI
-│  Dados)      │          │  _bigquery.py     │     │  │ fiel à │  │ limpo +│  │ 5 tab. │  │    │  (SQL)   │
-│ 7 entidades  │          └───────────────────┘     │  │ fonte  │  │integrad│  │ negócio│  │    └──────────┘
-└──────────────┘                    ▲               │  └────────┘  └────────┘  └────────┘  │
-                                    │               │       ▲          │            │      │    ┌──────────┐
-┌──────────────┐          ┌───────────────────┐     │       │          ▼            └──────┼───>│  ML /    │
-│  Producer    │streaming │  Glue Streaming   │     │  landing/   ┌──────────────┐         │    │  Feature │
-│  (simula     │─────────>│  (Spark Struct.   │────>│  (JSON cru) │ Data Quality │         │    │  Store   │
-│  sistema     │ Kinesis  │   Streaming)      │     │             │  logs/*.json │         │    └──────────┘
-│  externo)    │          └───────────────────┘     └──────────────────────────────────────┘
-└──────────────┘
+![Arquitetura da pipeline](docs/arquitetura.png)
 
-   ORQUESTRAÇÃO:  Step Functions (bronze → silver → gold, .sync, para na 1ª falha)
-                  EventBridge (agenda semanal, criada DISABLED de propósito)
-```
+O diagrama é gerado por código ([`scripts/gerar_diagrama_arquitetura.py`](scripts/gerar_diagrama_arquitetura.py)) e não desenhado à mão: quando a arquitetura mudar, é o script que muda, e o PNG sai de novo. Imagem solta em repositório envelhece sem ninguém perceber.
 
 ### Fluxo de dados, passo a passo
 
