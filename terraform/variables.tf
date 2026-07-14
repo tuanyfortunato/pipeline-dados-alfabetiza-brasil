@@ -14,6 +14,11 @@ variable "gcp_project_id" {
   type        = string
 }
 
+variable "alert_email" {
+  description = "E-mail que recebe o alarme de falha da esteira/streaming (confirmação por SNS na primeira vez)."
+  type        = string
+}
+
 variable "tags" {
   description = "Tags aplicadas a todos os recursos."
   type        = map(string)

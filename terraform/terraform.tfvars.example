@@ -5,3 +5,7 @@ bucket_name = "alfabetiza-brasil-datalake-teste"
 
 # projeto GCP da extração do BigQuery (o mesmo do .env)
 gcp_project_id = "seu-project-id"
+
+# recebe o alarme de falha da esteira/streaming - confirme a inscrição no
+# e-mail (SNS manda um link de confirmação assim que o apply criar o topico)
+alert_email = "seu-email@exemplo.com"

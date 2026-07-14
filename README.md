@@ -160,7 +160,9 @@ O que existe hoje, e é o que sustenta a operação:
 - **Step Functions** encadeia as camadas com `.sync` e **para na primeira falha** — não existe Silver rodando sobre uma Bronze que quebrou.
 - **Falha de ingestão é explícita**: `DataQualityError` aborta a execução, e o job aparece como `FAILED` no console do Glue.
 
-O que **não** está implementado, e seria o próximo passo: alarme no CloudWatch com notificação por **SNS** (e-mail em falha de job ou queda de score), e métrica customizada de latência do pipeline. Registro isso como lacuna consciente em vez de descrever como feito.
+- **Alarme com notificação por SNS** (`terraform/monitoramento.tf`): a esteira batch usa a métrica nativa do Step Functions (`ExecutionsFailed`) pra disparar um `aws_cloudwatch_metric_alarm`; o Glue Streaming, que roda fora da state machine, é pego por um evento nativo do Glue (`Glue Job State Change`) via EventBridge. As duas fontes mandam pro mesmo tópico SNS, com e-mail como assinante.
+
+O que **não** está implementado, e seria o próximo passo: métrica customizada de queda no score de DQ e de latência do pipeline — as duas exigiriam publicar métrica de dentro do código Python (pandas), não só infraestrutura. Registro isso como lacuna consciente em vez de descrever como feito.
 
 ---
 
