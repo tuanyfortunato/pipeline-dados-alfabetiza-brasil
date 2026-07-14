@@ -27,3 +27,8 @@ output "streaming_job_name" {
   description = "Glue Streaming job - use no start-job-run da demo de streaming"
   value       = aws_glue_job.streaming.name
 }
+
+output "sns_alertas_arn" {
+  description = "Topico de alerta de falha - confirme a inscricao do e-mail apos o apply"
+  value       = aws_sns_topic.alertas.arn
+}

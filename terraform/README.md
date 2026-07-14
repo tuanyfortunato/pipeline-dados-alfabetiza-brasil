@@ -1,9 +1,11 @@
 # Infraestrutura como código
 
 Toda a infra AWS do pipeline nasce daqui: o bucket do data lake (com versionamento,
-bloqueio de acesso público, criptografia e lifecycle de custo na Bronze) e o consumo
-analítico da Gold (database no Glue, workgroup do Athena com trava de scan e as três
-tabelas declaradas com o schema do `docs/dicionario_dados_gold.md`).
+bloqueio de acesso público, criptografia e lifecycle de custo na Bronze), o consumo
+analítico da Gold (database no Glue, workgroup do Athena com trava de scan e as
+tabelas declaradas com o schema do `docs/dicionario_dados_gold.md`) e o alerta de
+falha por e-mail (`monitoramento.tf` — SNS + alarme do Step Functions + evento do
+Glue Streaming).
 
 ## Contexto do ambiente
 
