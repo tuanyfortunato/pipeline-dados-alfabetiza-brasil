@@ -70,3 +70,20 @@ tem que atualizá-los a cada ~4h. Numa conta própria, a mudança seria só troc
 o passo de `configure-aws-credentials` para assumir a role via OIDC e o
 gatilho para `push: branches: [main]` - o resto do workflow (plan, apply,
 publicação do código) fica igual.
+
+### As opções do `workflow_dispatch`
+
+| Opção | O que faz |
+|---|---|
+| `apply` | `terraform apply` de verdade. Sem marcar, o job só roda `plan` - não toca em nada na AWS |
+| `deploy_code` | publica `src.zip` + os scripts do Glue no S3 (o `deploy_glue_artifacts.ps1` de dentro do CI) |
+| `run_pipeline` | dispara a state machine (`bronze -> silver -> gold`), pra validar a carga depois do deploy |
+| `ligar_kinesis` | apply restrito a `aws_kinesis_stream.eventos` + `aws_glue_job.streaming` - recria só o que o streaming precisa, sem mexer no resto da infra |
+| `desligar_kinesis` | para o Glue Streaming job (se estiver rodando) e destrói o Kinesis - equivalente ao `aws_desligar.ps1`, mas via `terraform destroy -target`, então o state não fica desalinhado da realidade como aconteceria apagando na mão |
+| `disparar_streaming` | `start-job-run` no Glue Streaming job - o pipeline volta a consumir o Kinesis e gravar na Bronze |
+
+`ligar_kinesis`, `desligar_kinesis` e `disparar_streaming` são encadeados no
+workflow (`needs`) pra nunca rodar em paralelo com o `apply`/`plan` principal -
+os dois mexeriam no mesmo state ao mesmo tempo. `desligar_kinesis` e
+`disparar_streaming` esperam o `ligar_kinesis` terminar (ou ser pulado, se não
+marcado) antes de rodar.
