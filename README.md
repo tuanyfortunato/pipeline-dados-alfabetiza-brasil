@@ -150,6 +150,23 @@ O check mais importante do projeto não é genérico: é o que **confronta o rec
 
 ---
 
+## Testes
+
+47 testes unitários em [`tests/`](tests/), cobrindo a lógica pura das quatro peças que carregam a regra de negócio e a qualidade de dados: `data_quality.py`, `lake.py`, `tratamento_integracao.py` e `metricas_gold.py`. Cada check de DQ, a regra dos 743 pontos, os cortes dos 9 níveis, a margem de erro ponderada, os quatro estados de `situacao_meta`, o resíduo de `perfil_escola` — tudo isso tem um teste que trava o número certo com uma massa de dado pequena e conferida à mão, não com a base inteira.
+
+```powershell
+pip install -r requirements.txt
+pytest
+```
+
+Um deles é teste de regressão de verdade: reproduz o layout exato de arquivos que o Structured Streaming deixa no S3 quando ainda não chegou nenhum evento real (só `_spark_metadata`), e prova que a Silver não quebra mais nesse cenário — é o `KeyError: 'ano'` que derrubou o `alfabetiza-batch-silver` em produção antes da correção.
+
+**Uma pegadinha do projeto, resolvida no `tests/conftest.py`:** os pacotes de camada (`01_bronze`, `02_silver`, `03_gold`) começam com dígito, que não é identificador Python válido — `from src.02_silver import x` é `SyntaxError`. Os testes importam via `importlib.import_module`, o mesmo truque que `scripts/glue_job_batch.py` já usa em produção para resolver isso.
+
+**Fora do escopo, por decisão consciente:** a ingestão Bronze (`ingestao_batch_bigquery.py`) e os consumers de streaming em Spark (`ingestao_streaming_consumer.py`, `ingestao_streaming_kinesis.py`). Testar essas partes de verdade exigiria mockar o client do BigQuery ou subir uma SparkSession — o retorno por linha de teste cai muito, e o risco real do projeto está na lógica de transformação, não na chamada de API em si. Se um dia isso entrar em escopo, o caminho natural é separar a orquestração (I/O) da lógica (hoje já bem isolada em `ingest_table`/`ENTITIES`) e testar só a segunda.
+
+---
+
 ## Monitoramento
 
 O que existe hoje, e é o que sustenta a operação:
@@ -159,8 +176,7 @@ O que existe hoje, e é o que sustenta a operação:
 - **CloudWatch Logs** recebe automaticamente a saída dos Glue jobs (foi lendo esse log que descobri, por exemplo, que a Bronze havia gravado 3,9 mi de registros com sucesso).
 - **Step Functions** encadeia as camadas com `.sync` e **para na primeira falha** — não existe Silver rodando sobre uma Bronze que quebrou.
 - **Falha de ingestão é explícita**: `DataQualityError` aborta a execução, e o job aparece como `FAILED` no console do Glue.
-
-O que **não** está implementado, e seria o próximo passo: alarme no CloudWatch com notificação por **SNS** (e-mail em falha de job ou queda de score), e métrica customizada de latência do pipeline. Registro isso como lacuna consciente em vez de descrever como feito.
+- **Alarme com notificação por SNS** (`terraform/monitoramento.tf`): a esteira batch usa a métrica nativa do Step Functions (`ExecutionsFailed`) pra disparar um `aws_cloudwatch_metric_alarm`; o Glue Streaming, que roda fora da state machine, é pego por um evento nativo do Glue (`Glue Job State Change`) via EventBridge. As duas fontes mandam pro mesmo tópico SNS, com e-mail como assinante.
 
 ---
 
