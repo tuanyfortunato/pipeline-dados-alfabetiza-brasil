@@ -82,8 +82,12 @@ publicação do código) fica igual.
 | `desligar_kinesis` | para o Glue Streaming job (se estiver rodando) e destrói o Kinesis - equivalente ao `aws_desligar.ps1`, mas via `terraform destroy -target`, então o state não fica desalinhado da realidade como aconteceria apagando na mão |
 | `disparar_streaming` | `start-job-run` no Glue Streaming job - o pipeline volta a consumir o Kinesis e gravar na Bronze |
 
-`ligar_kinesis`, `desligar_kinesis` e `disparar_streaming` são encadeados no
-workflow (`needs`) pra nunca rodar em paralelo com o `apply`/`plan` principal -
-os dois mexeriam no mesmo state ao mesmo tempo. `desligar_kinesis` e
-`disparar_streaming` esperam o `ligar_kinesis` terminar (ou ser pulado, se não
-marcado) antes de rodar.
+`ligar_kinesis`, `desligar_kinesis` e `disparar_streaming` rodam **soltos** -
+sem esperar o job principal (`terraform`) nem um ao outro. É de propósito:
+`desligar_kinesis` precisa derrubar o stream rápido, sem depender de plano
+nenhum rodar antes (o Kinesis cobra por shard-hora só de existir, então cada
+minuto de espera é custo). O preço dessa liberdade é que marcar mais de uma
+opção que mexe no Terraform no mesmo disparo (ex.: `apply` e `desligar_kinesis`
+juntos) pode esbarrar no lock nativo do S3 - uma delas falha com "state
+locked", não corrompe nada, só pede pra rodar de novo sozinha. Na dúvida,
+dispare uma opção de Terraform por vez.
