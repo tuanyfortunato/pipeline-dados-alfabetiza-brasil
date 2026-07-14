@@ -150,6 +150,23 @@ O check mais importante do projeto não é genérico: é o que **confronta o rec
 
 ---
 
+## Testes
+
+47 testes unitários em [`tests/`](tests/), cobrindo a lógica pura das quatro peças que carregam a regra de negócio e a qualidade de dados: `data_quality.py`, `lake.py`, `tratamento_integracao.py` e `metricas_gold.py`. Cada check de DQ, a regra dos 743 pontos, os cortes dos 9 níveis, a margem de erro ponderada, os quatro estados de `situacao_meta`, o resíduo de `perfil_escola` — tudo isso tem um teste que trava o número certo com uma massa de dado pequena e conferida à mão, não com a base inteira.
+
+```powershell
+pip install -r requirements.txt
+pytest
+```
+
+Um deles é teste de regressão de verdade: reproduz o layout exato de arquivos que o Structured Streaming deixa no S3 quando ainda não chegou nenhum evento real (só `_spark_metadata`), e prova que a Silver não quebra mais nesse cenário — é o `KeyError: 'ano'` que derrubou o `alfabetiza-batch-silver` em produção antes da correção.
+
+**Uma pegadinha do projeto, resolvida no `tests/conftest.py`:** os pacotes de camada (`01_bronze`, `02_silver`, `03_gold`) começam com dígito, que não é identificador Python válido — `from src.02_silver import x` é `SyntaxError`. Os testes importam via `importlib.import_module`, o mesmo truque que `scripts/glue_job_batch.py` já usa em produção para resolver isso.
+
+**Fora do escopo, por decisão consciente:** a ingestão Bronze (`ingestao_batch_bigquery.py`) e os consumers de streaming em Spark (`ingestao_streaming_consumer.py`, `ingestao_streaming_kinesis.py`). Testar essas partes de verdade exigiria mockar o client do BigQuery ou subir uma SparkSession — o retorno por linha de teste cai muito, e o risco real do projeto está na lógica de transformação, não na chamada de API em si. Se um dia isso entrar em escopo, o caminho natural é separar a orquestração (I/O) da lógica (hoje já bem isolada em `ingest_table`/`ENTITIES`) e testar só a segunda.
+
+---
+
 ## Monitoramento
 
 O que existe hoje, e é o que sustenta a operação:

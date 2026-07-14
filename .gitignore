@@ -9,6 +9,7 @@ credentials/
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Spark / Hadoop (ambiente local de streaming)
 tools/
