@@ -77,7 +77,7 @@ Em paralelo, o **streaming** simula um sistema externo mandando novas medições
 
 ## O que o pipeline descobriu
 
-Um pipeline que só move dado não prova nada. Depois que a Bronze preservou a fonte, a Silver limpou e integrou as bases e a Gold aplicou a regra dos 743 pontos, deu para fazer as perguntas que motivaram o projeto — e algumas respostas surpreenderam. São cinco achados, todos reproduzíveis em [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb), que registra o caminho inteiro, inclusive as ideias que não sobreviveram ao teste.
+Um pipeline que só move dado não prova nada. Depois que a Bronze preservou a fonte, a Silver limpou e integrou as bases e a Gold aplicou a regra dos 743 pontos, deu para fazer as perguntas que motivaram o projeto — e algumas respostas surpreenderam. São cinco achados, todos reproduzíveis em [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb), que registra o caminho inteiro, inclusive as ideias que não sobreviveram ao teste. E a Gold pronta sustenta uma segunda leva de análises — o tombo real de 18,7pp do RS em 2024, o gap da meta traduzido em crianças, as vitórias suspeitas com a prova esvaziada — registrada em [`notebooks/analise_gold.ipynb`](notebooks/analise_gold.ipynb).
 
 **1. O problema não está "no município" — está dentro da escola.**
 A pergunta era: quando duas crianças têm proficiências muito diferentes, *onde* nasce essa diferença? Separando a variação total em três fatias, o resultado foi: só **16%** da diferença está entre municípios, **9%** entre escolas do mesmo município e **75% entre alunos da mesma escola**. Ou seja: duas crianças sentadas na mesma sala tendem a estar mais distantes uma da outra do que as médias de dois municípios diferentes. Isso incomoda porque o município é justamente o grão em que a política funciona — é ele que pactua meta, aparece em ranking e recebe repasse —, mas ele explica só um sexto do problema. Foi esse número que motivou a criação da tabela `perfil_escola`: se a ação precisa descer ao nível da escola, a camada analítica precisa enxergar a escola.
@@ -307,14 +307,15 @@ O que a camada analítica entrega para decisão, hoje:
 ├── notebooks/
 │   ├── exploracao_bronze.ipynb           # EDA da Bronze
 │   ├── laboratorio_silver.ipynb          # prototipagem das transformações da Silver
-│   └── laboratorio_gold.ipynb            # o laboratório: 4 atos, do cálculo aos achados
+│   ├── laboratorio_gold.ipynb            # o laboratório: 4 atos, do cálculo aos achados
+│   └── analise_gold.ipynb                # a Gold pronta em uso: conferência + 8 análises
 ├── data/                                 # data lake local (gerado; fora do Git)
 └── logs/                                 # relatórios de qualidade (gerados; fora do Git)
 ```
 
 Se você está lendo o código pela primeira vez: comece por `scripts/test_bigquery_connection.py` (mostra como falamos com a fonte), depois `src/utils/`, e daí siga os números das pastas — `01_bronze` → `02_silver` → `03_gold` é a própria ordem de execução.
 
-E se quiser entender **por que** o código é como é, o caminho é [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb). Ele está versionado já executado (com os gráficos), dá para ler direto no GitHub.
+E se quiser entender **por que** o código é como é, o caminho é [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb); para ver a Gold pronta em uso, [`notebooks/analise_gold.ipynb`](notebooks/analise_gold.ipynb). Os dois estão versionados já executados (com os gráficos), dá para ler direto no GitHub.
 
 ---
 
@@ -386,7 +387,7 @@ Cada passo grava um relatório em `logs/dq_<camada>_<timestamp>.json`. Números 
 | Silver | 3,87 mi de alunos tratados, 410 linhas em quarentena | ~91% |
 | Gold | 10,4 mil municípios · 79,3 mil escolas · 5 tabelas | ~94% (2 *warnings*) |
 
-7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale) e, na Parte 2, sonda as visões que deram origem às tabelas novas - incluindo a descoberta dos pontos de corte dos 9 níveis do INEP, que a fonte publica sem a régua. Todos estão versionados já executados, dá para ler direto no GitHub.
+7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale) e sonda as visões que deram origem às tabelas novas - incluindo a descoberta dos pontos de corte dos 9 níveis do INEP, que a fonte publica sem a régua. Fechando o ciclo, `notebooks/analise_gold.ipynb` consome a Gold materializada: confere o produto e sustenta as análises que só as tabelas prontas permitem (o caso RS, o gap em crianças, as vitórias suspeitas). Todos estão versionados já executados, dá para ler direto no GitHub.
 
 > ⚠️ **Custo:** o streaming é o único item caro (US$ 0,88/h + Kinesis por shard-hora). Rode a demo cronometrada e **encerre com `./scripts/aws_desligar.ps1`**.
 
