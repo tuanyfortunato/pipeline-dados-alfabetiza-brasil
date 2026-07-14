@@ -41,9 +41,8 @@ A tabela `municipio` merece destaque, porque ela muda o modo de trabalhar: como 
 
 ### Diagrama da pipeline
 
-![Arquitetura da pipeline](docs/arquitetura.png)
+![Arquitetura da pipeline](docs/arquitetura_aws.png)
 
-O diagrama é gerado por código ([`scripts/gerar_diagrama_arquitetura.py`](scripts/gerar_diagrama_arquitetura.py)) e não desenhado à mão: quando a arquitetura mudar, é o script que muda, e o PNG sai de novo. Imagem solta em repositório envelhece sem ninguém perceber.
 
 ### Fluxo de dados, passo a passo
 
