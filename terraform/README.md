@@ -29,8 +29,44 @@ terraform apply
 terraform output   # nome do bucket -> LAKE_PATH do .env
 ```
 
-O state fica local (`terraform.tfstate`, gitignorado) - projeto solo não justifica
-backend remoto. O código `.tf` é a fonte da verdade; o state é descartável junto com
-a conta do lab.
+O state fica no S3 (prefixo `terraform-state/` do próprio bucket do data lake),
+com o locking nativo do Terraform (`use_lockfile`, sem precisar de DynamoDB). Era
+local no começo do projeto, mas isso quebra assim que existe um segundo lugar
+rodando `terraform` - o runner do GitHub Actions (ver `.github/workflows/deploy-aws.yml`)
+começa cada execução do zero, sem o histórico de nenhuma máquina. Sem state
+compartilhado, o `apply` do CI tentaria recriar bucket, jobs, tudo - foi
+literalmente o que quase aconteceu aqui ao notar que a pasta local não tinha
+`.tfstate`, mesmo com a infra inteira já no ar.
+
+A configuração do backend é parcial em `versions.tf`; os valores (bucket, key,
+região) vêm de `backend.hcl` (gitignorado, copie de `backend.hcl.example`):
+
+```powershell
+terraform init -backend-config=backend.hcl
+```
 
 Para desmontar tudo ao final: `terraform destroy`.
+
+## CI/CD
+
+O workflow `.github/workflows/deploy-aws.yml` roda `terraform plan`/`apply` e
+publica o código novo no S3 (a mesma coisa que `deploy_glue_artifacts.ps1` faz
+na mão). Duas coisas mudam em relação a uma conta AWS normal, e as duas vêm do
+Learner Lab:
+
+**Gatilho manual, não `push` em `main`.** A credencial da sessão do lab expira
+em ~4h e precisa ser recolada nos secrets do repositório
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`) antes de cada
+uso - automatizar em todo merge geraria execução vermelha sempre que alguém
+mergeasse fora de uma sessão ativa. O `workflow_dispatch` deixa escolher o
+momento (sessão aberta, credencial fresca), com três opções: só planejar,
+aplicar de verdade, e disparar a esteira no final pra validar.
+
+**Sem OIDC.** Numa conta própria, o normal é o GitHub Actions assumir uma role
+via OpenID Connect - zero segredo de longa duração armazenado. Aqui não dá:
+criar o provider OIDC e a role de confiança é escrita de IAM, que o lab
+bloqueia. Por isso os secrets guardam a credencial de sessão mesmo, e alguém
+tem que atualizá-los a cada ~4h. Numa conta própria, a mudança seria só trocar
+o passo de `configure-aws-credentials` para assumir a role via OIDC e o
+gatilho para `push: branches: [main]` - o resto do workflow (plan, apply,
+publicação do código) fica igual.
