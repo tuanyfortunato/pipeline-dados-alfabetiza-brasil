@@ -12,15 +12,27 @@ on:
   workflow_dispatch:
     inputs:
       apply:
-        description: "Aplicar o Terraform (sem marcar, so roda plan)"
+        description: "Terraform apply de verdade (Athena, Glue jobs, EventBridge...). Sem marcar, so mostra o plano e nao toca em nada na AWS."
         type: boolean
         default: false
       deploy_code:
-        description: "Publicar src.zip e os scripts do Glue no S3"
+        description: "Publica o codigo mais recente (src.zip + scripts do Glue) no S3, pra qualquer job usar a versao atual."
         type: boolean
         default: true
       run_pipeline:
-        description: "Disparar a esteira (Step Functions) no final"
+        description: "Dispara a esteira Bronze -> Silver -> Gold pela Step Functions, pra validar a carga depois do deploy."
+        type: boolean
+        default: false
+      ligar_kinesis:
+        description: "Recria so o Kinesis (e atualiza o Glue Streaming job com o ARN novo), sem aplicar o resto da infra. Rodar antes de uma demo de streaming."
+        type: boolean
+        default: false
+      desligar_kinesis:
+        description: "Para o Glue Streaming job se estiver rodando e destroi o Kinesis - ele cobra por shard-hora so de existir. Rodar ao final da demo."
+        type: boolean
+        default: false
+      disparar_streaming:
+        description: "Inicia o Glue Streaming job (consome o Kinesis e grava os eventos na Bronze). Precisa do Kinesis ligado - marque 'ligar_kinesis' junto se ele ainda nao existir."
         type: boolean
         default: false
 
@@ -71,6 +83,111 @@ jobs:
       - name: Terraform apply
         if: ${{ inputs.apply }}
         run: terraform apply -auto-approve tfplan
+
+  ligar-kinesis:
+    needs: terraform
+    if: ${{ inputs.ligar_kinesis }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configura a credencial da sessao do lab
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+
+      - name: Terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.LAKE_BUCKET }}" \
+            -backend-config="key=terraform-state/pipeline.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      # os dois juntos porque o job do Glue Streaming guarda o ARN do Kinesis
+      # nos default_arguments - so recriar a stream sem tocar no job deixaria
+      # ele apontando pro ARN velho (o -target não propaga pra quem depende
+      # do recurso, só pra quem ele depende).
+      - name: Recria o Kinesis e atualiza o Glue Streaming job
+        run: |
+          terraform apply -auto-approve \
+            -var="bucket_name=${{ env.LAKE_BUCKET }}" \
+            -var="gcp_project_id=${{ env.GCP_PROJECT_ID }}" \
+            -target=aws_kinesis_stream.eventos \
+            -target=aws_glue_job.streaming
+
+  desligar-kinesis:
+    needs: ligar-kinesis
+    if: ${{ inputs.desligar_kinesis && (needs.ligar-kinesis.result == 'success' || needs.ligar-kinesis.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configura a credencial da sessao do lab
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # destruir a stream com o job ainda lendo dela deixa a run em erro sem
+      # necessidade - mesma disciplina do aws_desligar.ps1 local
+      - name: Para o Glue Streaming job, se estiver rodando
+        run: |
+          runs=$(aws glue get-job-runs --job-name alfabetiza-streaming-kinesis \
+            --query "JobRuns[?JobRunState=='RUNNING'].Id" --output text)
+          if [ -n "$runs" ]; then
+            aws glue batch-stop-job-run --job-name alfabetiza-streaming-kinesis --job-run-ids $runs
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+
+      - name: Terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.LAKE_BUCKET }}" \
+            -backend-config="key=terraform-state/pipeline.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Destroi o Kinesis
+        run: |
+          terraform destroy -auto-approve \
+            -var="bucket_name=${{ env.LAKE_BUCKET }}" \
+            -var="gcp_project_id=${{ env.GCP_PROJECT_ID }}" \
+            -target=aws_kinesis_stream.eventos
+
+  disparar-streaming:
+    needs: ligar-kinesis
+    if: ${{ inputs.disparar_streaming && (needs.ligar-kinesis.result == 'success' || needs.ligar-kinesis.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configura a credencial da sessao do lab
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Inicia o Glue Streaming job
+        run: aws glue start-job-run --job-name alfabetiza-streaming-kinesis
 
   deploy-code:
     needs: terraform
