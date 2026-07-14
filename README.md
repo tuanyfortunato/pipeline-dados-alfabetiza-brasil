@@ -377,23 +377,28 @@ terraform apply                        # S3, Glue catálogo, Athena, jobs, Step 
 cd ..
 ./scripts/deploy_glue_artifacts.ps1    # publica o código (src.zip) no S3
 ```
-Ele lê a Silver e grava em `data/gold/` as cinco tabelas analíticas: `indicador_municipio/` (10,4 mil linhas), `meta_vs_resultado/` (gap, `ic95` e a `situacao_meta`), `evolucao_temporal/` (33,4 mil linhas, por recorte geográfico e rede), `perfil_escola/` (79,3 mil linhas - o grão que faltava) e `distribuicao_proficiencia/` (33,4 mil linhas, com os 9 níveis oficiais do INEP e as faixas de negócio). O relatório sai em `logs/dq_gold_<timestamp>.json` - na base atual, score de ~94% com dois *warnings*, ambos do mesmo grupo de municípios pequenos: o recálculo da taxa diverge do gabarito em 45 municípios (0,4%) e a distribuição por nível estoura a tolerância em 1,15% das células. Uma prova real: a taxa Brasil 2024 recalculada dá **59,2** - exatamente o número oficial.
+Com a infra de pé, a esteira batch roda pela Step Functions `alfabetiza-batch-esteira`, que encadeia Bronze → Silver → Gold e para na primeira falha:
 
-Cada passo grava um relatório em `logs/dq_<camada>_<timestamp>.json`. Números da base atual:
-
-| Camada | Resultado | Score de DQ |
-|---|---|---|
-| Bronze | 3,9 mi de registros, 7 entidades | — |
-| Silver | 3,87 mi de alunos tratados, 410 linhas em quarentena | ~91% |
-| Gold | 10,4 mil municípios · 79,3 mil escolas · 5 tabelas | ~94% (2 *warnings*) |
+```powershell
+aws stepfunctions start-execution --state-machine-arn arn:aws:states:us-east-1:<conta>:stateMachine:alfabetiza-batch-esteira
+```
 
 7. (Opcional) Os notebooks documentam o caminho até aqui: `notebooks/exploracao_bronze.ipynb` traz a EDA da Bronze (perfil das entidades, distribuição da proficiência, chaves), `notebooks/laboratorio_silver.ipynb` prototipa cada transformação da Silver com contagem antes/depois e `notebooks/laboratorio_gold.ipynb` valida as decisões de cálculo da Gold contra o gabarito oficial (ponderação pelo peso amostral, denominador, qual meta vale) e sonda as visões que deram origem às tabelas novas - incluindo a descoberta dos pontos de corte dos 9 níveis do INEP, que a fonte publica sem a régua. Fechando o ciclo, `notebooks/analise_gold.ipynb` consome a Gold materializada: confere o produto e sustenta as análises que só as tabelas prontas permitem (o caso RS, o gap em crianças, as vitórias suspeitas). Todos estão versionados já executados, dá para ler direto no GitHub.
 
-> ⚠️ **Custo:** o streaming é o único item caro (US$ 0,88/h + Kinesis por shard-hora). Rode a demo cronometrada e **encerre com `./scripts/aws_desligar.ps1`**.
+Para a demo de streaming, a ordem é: subir o consumer no Glue (que lê o Kinesis e grava na Bronze) e então disparar o producer:
+
+```powershell
+aws glue start-job-run --job-name alfabetiza-streaming-kinesis
+python src/streaming/producer_eventos.py --destino kinesis
+```
 
 O producer continua rodando local de propósito: ele *simula um sistema externo*, e sistema externo não roda dentro do pipeline — manda eventos para a borda (o Kinesis) via `boto3`.
 
-**Consumo:** as cinco tabelas Gold estão registradas no catálogo do Glue e são consultadas em SQL no Athena, no workgroup `alfabetiza-gold` (com limite de 1 GB por query como trava de custo).
+Todas essas operações também existem como **workflow manual no GitHub Actions** ([`.github/workflows/deploy-aws.yml`](.github/workflows/deploy-aws.yml)): plan/apply do Terraform, publicação do código, disparo da esteira e liga/desliga do Kinesis, cada uma como opção independente do mesmo disparo. O gatilho é manual, e não push na main, porque a credencial do Learner Lab expira a cada ~4h — numa conta própria, com role via OIDC, viraria deploy contínuo sem mudar o resto do workflow.
+
+> ⚠️ **Custo:** o streaming é o único item caro (US$ 0,88/h + Kinesis por shard-hora). Rode a demo cronometrada e **encerre com `./scripts/aws_desligar.ps1`**, que para as execuções e destrói o stream (o `aws_ligar.ps1` recria tudo via `terraform apply`).
+
+**Consumo:** as cinco tabelas Gold estão registradas no catálogo do Glue e são consultadas em SQL no Athena, no workgroup `alfabetiza-gold` (com limite de 1 GB por query como trava de custo). Os resultados na nuvem reproduzem os da execução local — mesma tabela de scores da seção anterior, incluindo a taxa Brasil 2024 recalculada em **59,2**, o número oficial.
 
 ---
 
