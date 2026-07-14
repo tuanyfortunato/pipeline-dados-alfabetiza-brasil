@@ -41,7 +41,7 @@ A tabela `municipio` merece destaque, porque ela muda o modo de trabalhar: como 
 
 ### Diagrama da pipeline
 
-![Arquitetura da pipeline](docs/arquitetura_aws.png)
+![Arquitetura da pipeline](docs/arquitetura.png)
 
 
 ### Fluxo de dados, passo a passo
@@ -77,17 +77,22 @@ Em paralelo, o **streaming** simula um sistema externo mandando novas medições
 
 ## O que o pipeline descobriu
 
-Um pipeline que só move dado não prova nada. Estes são os achados que saíram da camada analítica — todos reproduzíveis em [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb), que registra o caminho inteiro, inclusive as ideias que não sobreviveram ao teste.
+Um pipeline que só move dado não prova nada. Depois que a Bronze preservou a fonte, a Silver limpou e integrou as bases e a Gold aplicou a regra dos 743 pontos, deu para fazer as perguntas que motivaram o projeto — e algumas respostas surpreenderam. São cinco achados, todos reproduzíveis em [`notebooks/laboratorio_gold.ipynb`](notebooks/laboratorio_gold.ipynb), que registra o caminho inteiro, inclusive as ideias que não sobreviveram ao teste.
 
-**O indicador municipal explica 16% da variação.** Decompondo a variância da proficiência: 16% está entre municípios, 9% entre escolas do mesmo município e **75% entre alunos da mesma escola**. O município — grão em que a política pactua meta, publica ranking e decide repasse — responde por um sexto da diferença. Foi esse número que motivou a tabela `perfil_escola`.
+**1. O problema não está "no município" — está dentro da escola.**
+A pergunta era: quando duas crianças têm proficiências muito diferentes, *onde* nasce essa diferença? Separando a variação total em três fatias, o resultado foi: só **16%** da diferença está entre municípios, **9%** entre escolas do mesmo município e **75% entre alunos da mesma escola**. Ou seja: duas crianças sentadas na mesma sala tendem a estar mais distantes uma da outra do que as médias de dois municípios diferentes. Isso incomoda porque o município é justamente o grão em que a política funciona — é ele que pactua meta, aparece em ranking e recebe repasse —, mas ele explica só um sexto do problema. Foi esse número que motivou a criação da tabela `perfil_escola`: se a ação precisa descer ao nível da escola, a camada analítica precisa enxergar a escola.
 
-**O mapa das piores taxas não é o mapa das crianças.** Metade de todas as crianças não alfabetizadas do país está em **195 municípios** (3,5% do total). E a sobreposição entre "os 50 municípios com pior taxa" e "os 50 com mais crianças fora" é **zero**. Percentual esconde volume; priorizar por taxa aponta para municípios pequenos, priorizar por volume aponta para as capitais.
+**2. O mapa das piores taxas não é o mapa das crianças.**
+Existem duas formas de perguntar "onde está o problema?", e elas dão respostas opostas. Se a pergunta é *"quais municípios têm a pior taxa?"*, a resposta aponta para municípios pequenos, com poucas dezenas de alunos. Se a pergunta é *"onde estão as crianças não alfabetizadas?"*, a resposta aponta para as capitais e cidades grandes: metade de todas as crianças fora da alfabetização está concentrada em apenas **195 municípios** — 3,5% do total. E o mais revelador: comparando "os 50 municípios com pior taxa" com "os 50 com mais crianças fora", a sobreposição é **zero**. Nenhum município aparece nas duas listas. A lição: percentual esconde volume. Uma política que priorize só por taxa vai gastar esforço onde há poucas crianças; uma que olhe volume vai para onde elas de fato estão.
 
-**Município pequeno não tem taxa ruim — tem taxa incerta.** 544 municípios têm menos de 30 alunos avaliados, com margem de erro média de ±17,6pp. Qualquer ranking feito sem olhar o tamanho enche o topo e o fundo da lista com ruído estatístico.
+**3. Município pequeno não tem taxa ruim — tem taxa incerta.**
+O indicador vem de uma pesquisa amostral, e amostra pequena produz número instável. **544 municípios** têm menos de 30 alunos avaliados, e nesses casos a margem de erro média é de **±17,6 pontos percentuais** — o suficiente para o mesmo município aparecer entre os melhores ou entre os piores do país só por sorte de sorteio. É por isso que toda taxa na Gold carrega a própria margem de erro (`ic95`): qualquer ranking montado sem olhar o tamanho da amostra enche o topo e o fundo da lista com ruído estatístico, não com realidade.
 
-**A régua dos 9 níveis do INEP estava escondida.** A fonte publica a distribuição dos alunos por nível (`proporcao_aluno_nivel_0..8`), mas o dicionário **não publica os pontos de corte**. Derivei por quantis ponderados e validei município a município: é uma grade de 25 em 25 pontos a partir de 650, com erro mediano de **0,003pp** em 5.516 municípios. Virou tabela e virou check de qualidade permanente.
+**4. A régua dos 9 níveis do INEP estava escondida — e foi possível reconstruí-la.**
+A fonte publica quantos alunos caem em cada um dos 9 níveis de proficiência (`proporcao_aluno_nivel_0..8`), mas o dicionário **não diz onde um nível termina e o outro começa**. Sem os pontos de corte, essas colunas são inutilizáveis. Como o pipeline tem os microdados por aluno *e* as proporções oficiais por município, deu para trabalhar de trás para frente: derivar os cortes por quantis ponderados e conferir, município a município, se as proporções recalculadas batiam com as publicadas. Bateram — a régua é uma grade de 25 em 25 pontos a partir de 650, com erro mediano de **0,003pp** em 5.516 municípios. A descoberta virou tabela na Gold e virou check permanente de qualidade: se o INEP revisar os números, o pipeline acusa.
 
-**Existe um contingente enorme logo abaixo do corte.** Se todas as crianças a 10 pontos da linha a cruzassem, a taxa nacional iria de 59,2% para **67,0%**.
+**5. Existe um contingente enorme logo abaixo da linha de corte.**
+A taxa nacional trata igual a criança que ficou a 5 pontos do corte e a que ficou a 100 — mas para quem desenha intervenção, essa diferença é tudo. Medindo quantas crianças estão *quase lá*: se todas as que ficaram a até 10 pontos da linha a cruzassem, a taxa nacional saltaria de 59,2% para **67,0%** — quase 8 pontos percentuais em crianças que já estão na porta. É o argumento mais direto que a base oferece sobre onde o esforço rende mais rápido, e é o que a coluna `pct_quase_la` da Gold mede para cada recorte.
 
 ---
 
@@ -127,6 +132,7 @@ Um pipeline que só move dado não prova nada. Estes são os achados que saíram
 
 **E o SQS, já que a nuvem é AWS?** Foi a pergunta que mais me fez pesquisar. Como *fonte* de dados o SQS não encaixa: é fila de tarefas, não log de eventos. A leitura é destrutiva (consumiu, some), então não dá para reprocessar histórico nem garantir ordem — que é justo o que o checkpoint do streaming pressupõe. Onde o SQS ajudaria é como *campainha* ("chegou arquivo novo no S3"), evitando varrer o bucket. No meu volume, listar é instantâneo, então não paga a complexidade. Para streaming de verdade, o caminho é Kinesis (o equivalente ao Kafka na AWS).
 
+![Arquitetura AWS](docs/arquitetura_aws.png)
 ---
 
 ## Qualidade de dados
