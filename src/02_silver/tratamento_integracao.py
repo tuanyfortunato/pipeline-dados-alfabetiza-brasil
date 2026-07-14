@@ -159,7 +159,15 @@ def integrar_eventos_streaming(municipio: pd.DataFrame) -> None:
         logger.info("sem eventos de streaming em %s; integração ignorada", bronze_streaming)
         return
 
+    # O prefixo pode "existir" só com metadado do Spark (_spark_metadata,
+    # checkpoint) e nenhum evento de verdade ainda materializado - o
+    # Structured Streaming grava esses arquivos antes do primeiro micro-batch
+    # com dado. Sem essa checagem, o read volta sem a coluna `ano` e quebra
+    # o job inteiro por causa de uma integração que é opcional.
     eventos = pd.read_parquet(bronze_streaming)
+    if eventos.empty:
+        logger.info("bronze/streaming sem eventos de verdade ainda (só metadado do Spark); integração ignorada")
+        return
     _para_inteiro(eventos, ["id_municipio"])
     eventos["ano"] = pd.to_numeric(eventos["ano"]).astype(int)
     _para_decimal(eventos, ["proficiencia_media"])
