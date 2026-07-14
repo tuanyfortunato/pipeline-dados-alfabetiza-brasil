@@ -1,0 +1,10 @@
+# Copie para backend.hcl e ajuste. O backend.hcl real é gitignorado (mesmo
+# raciocínio do terraform.tfvars: nada de nome de recurso específico da conta
+# hardcoded no .tf versionado).
+#
+# Uso: terraform init -backend-config=backend.hcl
+
+bucket       = "alfabetiza-brasil-datalake-tc2"
+key          = "terraform-state/pipeline.tfstate"
+region       = "us-east-1"
+use_lockfile = true

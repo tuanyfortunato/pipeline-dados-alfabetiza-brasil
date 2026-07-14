@@ -1,0 +1,120 @@
+name: Deploy AWS (Terraform + Glue)
+
+# Disparo manual, não em todo push pra main. A conta é um Learner Lab da AWS
+# Academy: a credencial da sessão expira a cada ~4h e precisa ser recolada nos
+# secrets do repositório antes de rodar. Automatizar em push geraria execução
+# vermelha toda vez que alguém mergeasse fora de uma sessão ativa do lab - o
+# botão manual deixa você decidir o momento certo (sessão aberta, credencial
+# fresca). Numa conta própria, com uma role assumida via OIDC em vez de
+# credencial de sessão, esse gatilho viraria `push: branches: [main]` sem
+# mudar mais nada do workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Aplicar o Terraform (sem marcar, so roda plan)"
+        type: boolean
+        default: false
+      deploy_code:
+        description: "Publicar src.zip e os scripts do Glue no S3"
+        type: boolean
+        default: true
+      run_pipeline:
+        description: "Disparar a esteira (Step Functions) no final"
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  LAKE_BUCKET: alfabetiza-brasil-datalake-tc2
+  GCP_PROJECT_ID: analisealfabetizacaobrasil
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configura a credencial da sessao do lab
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+
+      # bucket/key do backend não são segredo (já aparecem em texto puro nos
+      # scripts de deploy/liga-desliga); por isso vao direto no -backend-config
+      # em vez de precisar reconstruir o backend.hcl gitignorado no runner.
+      - name: Terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.LAKE_BUCKET }}" \
+            -backend-config="key=terraform-state/pipeline.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform plan
+        run: |
+          terraform plan \
+            -var="bucket_name=${{ env.LAKE_BUCKET }}" \
+            -var="gcp_project_id=${{ env.GCP_PROJECT_ID }}" \
+            -out=tfplan
+
+      - name: Terraform apply
+        if: ${{ inputs.apply }}
+        run: terraform apply -auto-approve tfplan
+
+  deploy-code:
+    needs: terraform
+    if: ${{ inputs.deploy_code }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configura a credencial da sessao do lab
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # mesma lógica do scripts/deploy_glue_artifacts.ps1: o zip precisa do
+      # prefixo src/ pra os imports do pipeline resolverem dentro do Glue job
+      - name: Empacota o src/ e publica no S3
+        run: |
+          mkdir -p /tmp/glue_staging/src
+          cp -r src/* /tmp/glue_staging/src/
+          find /tmp/glue_staging -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          (cd /tmp/glue_staging && zip -rq /tmp/src.zip src)
+
+          aws s3 cp /tmp/src.zip "s3://${{ env.LAKE_BUCKET }}/scripts/src.zip"
+          aws s3 cp scripts/glue_job_batch.py "s3://${{ env.LAKE_BUCKET }}/scripts/glue_job_batch.py"
+          aws s3 cp src/01_bronze/ingestao_streaming_kinesis.py "s3://${{ env.LAKE_BUCKET }}/scripts/ingestao_streaming_kinesis.py"
+
+  run-pipeline:
+    needs: deploy-code
+    if: ${{ inputs.run_pipeline }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configura a credencial da sessao do lab
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Dispara a esteira bronze -> silver -> gold
+        run: |
+          conta=$(aws sts get-caller-identity --query Account --output text)
+          aws stepfunctions start-execution \
+            --state-machine-arn "arn:aws:states:${{ env.AWS_REGION }}:${conta}:stateMachine:alfabetiza-batch-esteira"

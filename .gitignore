@@ -24,6 +24,8 @@ terraform/.terraform/
 *.tfstate.*
 terraform/*.tfvars
 !terraform/terraform.tfvars.example
+terraform/backend.hcl
+!terraform/backend.hcl.example
 
 # Dados e logs locais (não versionar dados brutos, só código)
 data/
