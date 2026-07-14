@@ -15,3 +15,6 @@ python-dotenv==1.0.1
 # Notebooks (só o desenvolvimento local usa; os Glue jobs instalam a própria lista)
 matplotlib==3.11.0
 ipykernel==7.3.0
+
+# Testes (só o desenvolvimento local usa)
+pytest==9.1.1
