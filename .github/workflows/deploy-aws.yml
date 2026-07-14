@@ -84,8 +84,14 @@ jobs:
         if: ${{ inputs.apply }}
         run: terraform apply -auto-approve tfplan
 
+  # As três daqui pra baixo rodam soltas - sem `needs` entre si nem com o job
+  # "terraform" acima. É de propósito: `desligar_kinesis` precisa ser rápido e
+  # não pode ficar esperando plano nenhum pra derrubar o stream que está
+  # cobrando por hora. O preço dessa liberdade é que marcar mais de uma opção
+  # de Terraform no mesmo disparo (ex.: `apply` e `desligar_kinesis` juntos)
+  # pode esbarrar no lock nativo do S3 - uma delas falha com "state locked",
+  # não corrompe nada, só pede pra rodar nesse caso uma de cada vez.
   ligar-kinesis:
-    needs: terraform
     if: ${{ inputs.ligar_kinesis }}
     runs-on: ubuntu-latest
     defaults:
@@ -127,8 +133,7 @@ jobs:
             -target=aws_glue_job.streaming
 
   desligar-kinesis:
-    needs: ligar-kinesis
-    if: ${{ inputs.desligar_kinesis && (needs.ligar-kinesis.result == 'success' || needs.ligar-kinesis.result == 'skipped') }}
+    if: ${{ inputs.desligar_kinesis }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -174,8 +179,7 @@ jobs:
             -target=aws_kinesis_stream.eventos
 
   disparar-streaming:
-    needs: ligar-kinesis
-    if: ${{ inputs.disparar_streaming && (needs.ligar-kinesis.result == 'success' || needs.ligar-kinesis.result == 'skipped') }}
+    if: ${{ inputs.disparar_streaming }}
     runs-on: ubuntu-latest
     steps:
       - name: Configura a credencial da sessao do lab
