@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alfabetiza Brasil | Apresentação Executiva</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+        --bg: #020617;
+        --surface: #0f172a;
+        --border: #1e293b;
+        --accent: #38bdf8;
+        --accent-strong: #0284c7;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --good: #34d399;
+        --warn: #fbbf24;
+    }
+
+    html, body { height: 100%; }
+
+    body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
+        overflow: hidden;
+    }
+
+    .slide {
+        display: none;
+        position: absolute;
+        inset: 0;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding: 3rem 4.5rem 5.5rem;
+        opacity: 0;
+        transition: opacity .4s ease;
+    }
+    .slide.active { display: flex; opacity: 1; }
+
+    .slide-inner { width: 100%; max-width: 1280px; }
+
+    /* ---- tipografia ---- */
+    .kicker {
+        text-transform: uppercase;
+        letter-spacing: .18em;
+        font-size: .78rem;
+        font-weight: 600;
+        color: var(--accent);
+        margin-bottom: .6rem;
+    }
+    h1 { font-size: 3.4rem; line-height: 1.1; margin-bottom: 1.4rem; }
+    h2 { font-size: 2.1rem; line-height: 1.2; margin-bottom: .5rem; }
+    .subtitle { color: var(--muted); font-size: 1.1rem; margin-bottom: 1.6rem; max-width: 60rem; }
+    .lead { font-size: 1.35rem; color: #cbd5e1; line-height: 1.6; }
+    strong { color: var(--text); }
+
+    /* ---- componentes ---- */
+    .chart-frame {
+        background: #ffffff;
+        border-radius: 14px;
+        padding: .8rem;
+        box-shadow: 0 18px 45px rgba(0,0,0,.5);
+        display: flex;
+        justify-content: center;
+        gap: .8rem;
+    }
+    .chart-frame img {
+        max-width: 100%;
+        max-height: 52vh;
+        object-fit: contain;
+        border-radius: 8px;
+    }
+    .chart-frame.duo img { width: calc(50% - .4rem); }
+
+    .cards { display: grid; gap: 1rem; margin-top: 1.3rem; }
+    .cards.two { grid-template-columns: 1fr 1fr; }
+    .cards.three { grid-template-columns: 1fr 1fr 1fr; }
+
+    .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.1rem 1.3rem;
+    }
+    .card h3 {
+        font-size: .8rem;
+        text-transform: uppercase;
+        letter-spacing: .12em;
+        color: var(--accent);
+        margin-bottom: .5rem;
+    }
+    .card p { color: #cbd5e1; font-size: 1.02rem; line-height: 1.55; }
+
+    .card.highlight { border-color: var(--accent-strong); background: #082f49; }
+    .card.highlight h3 { color: var(--good); }
+
+    .big-number {
+        font-size: 2.6rem;
+        font-weight: 700;
+        color: var(--accent);
+        line-height: 1;
+        margin-bottom: .35rem;
+    }
+    .big-number small { font-size: 1rem; font-weight: 400; color: var(--muted); display: block; margin-top: .4rem; }
+
+    ul.plain { list-style: none; }
+    ul.plain li {
+        padding-left: 1.6rem;
+        position: relative;
+        margin-bottom: .9rem;
+        font-size: 1.15rem;
+        color: #cbd5e1;
+        line-height: 1.55;
+    }
+    ul.plain li::before { content: "→"; position: absolute; left: 0; color: var(--accent); }
+
+    /* ---- controles ---- */
+    .controls {
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: .9rem 2.2rem;
+        background: rgba(2, 6, 23, .92);
+        border-top: 1px solid var(--border);
+        z-index: 10;
+    }
+    .controls button {
+        font: inherit;
+        font-size: .95rem;
+        padding: .55rem 1.5rem;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+    }
+    .controls button.primary { background: var(--accent-strong); border-color: var(--accent-strong); }
+    .controls button:hover { filter: brightness(1.2); }
+    #counter { color: var(--muted); font-size: .9rem; letter-spacing: .08em; }
+
+    #progress {
+        position: fixed;
+        top: 0; left: 0;
+        height: 3px;
+        background: var(--accent);
+        transition: width .3s ease;
+        z-index: 20;
+    }
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+
+<div id="slides-container">
+
+    <!-- ============ 1. CAPA ============ -->
+    <div class="slide active">
+        <div class="slide-inner">
+            <p class="kicker">Tech Challenge · AI Scientist</p>
+            <h1>Onde estão as crianças que ainda não aprenderam a ler — <span style="color:var(--accent)">e o que fazer primeiro</span></h1>
+            <p class="lead" style="max-width:52rem; margin-bottom:3rem;">Um pipeline de dados que transforma os números públicos do INEP em respostas diretas para o Compromisso Nacional Criança Alfabetizada.</p>
+            <div style="border-left: 4px solid var(--accent-strong); padding-left: 1.4rem;">
+                <p style="font-size:.8rem; text-transform:uppercase; letter-spacing:.15em; color:var(--muted);">Apresentado por</p>
+                <p style="font-size:1.7rem; font-weight:600;">Tuany Fortunato do Carmo</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 2. O PROBLEMA DE NEGÓCIO ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Por que fizemos esta análise</p>
+            <h2>O Brasil assumiu uma meta: toda criança alfabetizada até o fim do 2º ano</h2>
+            <p class="subtitle">Esse é o Compromisso Nacional Criança Alfabetizada. Mas assumir a meta é uma coisa — saber onde agir para cumpri-la é outra.</p>
+            <div class="cards three">
+                <div class="card">
+                    <h3>O contexto</h3>
+                    <p>O país mede a alfabetização com uma prova nacional (o SAEB). Uma criança é considerada alfabetizada quando atinge <strong>743 pontos</strong> nessa prova. Hoje, <strong>cerca de 4 em cada 10 crianças da rede pública não chegam lá</strong>.</p>
+                </div>
+                <div class="card">
+                    <h3>O problema</h3>
+                    <p>Os dados existem e são públicos, mas estão espalhados em milhões de linhas, em formatos difíceis de usar. Quem decide onde investir não consegue responder perguntas simples como: <strong>"em quais cidades o esforço rende mais?"</strong></p>
+                </div>
+                <div class="card highlight">
+                    <h3>O que entregamos</h3>
+                    <p>Um pipeline que coleta, limpa e organiza esses dados de ponta a ponta — e os transforma em <strong>evidências práticas para priorizar investimento</strong>. É isso que vamos mostrar nos próximos slides.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 3. ARQUITETURA ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Como os dados viram resposta</p>
+            <h2>A "linha de produção" dos dados: Arquitetura Medalhão</h2>
+            <p class="subtitle">Pense em uma fábrica com três estações. A matéria-prima entra suja e sai pronta para a decisão — e há controle de qualidade em todas as etapas.</p>
+            <div class="chart-frame">
+                <img src="arquitetura/arquitetura.png" alt="Diagrama da arquitetura do pipeline em três camadas: Bronze, Silver e Gold">
+            </div>
+            <div class="cards three">
+                <div class="card">
+                    <h3>🥉 Bronze — recebemos</h3>
+                    <p>Cópia fiel dos dados originais, do jeito que chegaram. Se algo der errado depois, sempre dá para voltar à fonte.</p>
+                </div>
+                <div class="card">
+                    <h3>🥈 Silver — limpamos</h3>
+                    <p>Dados conferidos e padronizados. O que está inconsistente vai para "quarentena" — é separado, nunca apagado em silêncio.</p>
+                </div>
+                <div class="card">
+                    <h3>🥇 Gold — respondemos</h3>
+                    <p>Tabelas prontas para o negócio: taxa de alfabetização por escola, município e estado, prontas para dashboard e análise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 4. COMO LER A RÉGUA ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Antes dos resultados, um minuto sobre a régua</p>
+            <h2>A nota do SAEB não é como uma prova de 0 a 10</h2>
+            <div class="chart-frame">
+                <img src="imagens/1.png" alt="Distribuição das notas dos alunos: a escala vai de 578 a 904, com o corte oficial em 743">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Cada barra conta quantas crianças tiraram cada nota. Na prática, as notas vivem <strong>entre 578 e 904 pontos</strong> — ninguém tira "zero". A linha preta é o corte oficial: <strong>743 pontos = criança alfabetizada</strong>.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>Repare como a "montanha" de crianças está <strong>colada no corte</strong>. Muitas estão logo abaixo da linha — quase lá. Guarde essa imagem: ela é a base da oportunidade que vamos mostrar no final.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 5. VALIDAÇÃO 1 ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Confiança primeiro</p>
+            <h2>Antes de tirar conclusões, provamos que nossos números batem com os oficiais</h2>
+            <div class="chart-frame">
+                <img src="imagens/8.png" alt="Comparação entre os percentuais publicados pelo INEP e os recalculados pelo pipeline: as barras coincidem">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Refizemos o cálculo do INEP do zero, criança por criança, e comparamos com o número publicado. As barras cinzas (oficial) e azuis (nosso recálculo) <strong>coincidem em todas as faixas</strong> — a diferença típica é de 0,003 ponto percentual, nos 5.516 municípios conferidos.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>Significa que <strong>tudo o que vem a seguir está ancorado no número oficial</strong>. Não é uma estimativa paralela: é o mesmo resultado do INEP, só que agora aberto por escola e por município, pronto para ser explorado.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 6. VALIDAÇÃO 2 ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Um detalhe técnico que muda a resposta</p>
+            <h2>Somar médias do jeito errado dá um Brasil que não existe</h2>
+            <div class="chart-frame">
+                <img src="imagens/2.png" alt="Média ponderada reproduz o número oficial em 95% ou mais dos municípios; a média simples, em menos da metade">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Para calcular a taxa de um município, dá para tirar a média "simples" das escolas (todas pesam igual) ou a média <strong>ponderada</strong> (escola com mais alunos pesa mais). Só a ponderada bate com o gabarito oficial — <strong>em ~95% dos municípios, contra ~22% da simples</strong>.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>Parece detalhe, mas é o tipo de erro silencioso que gera relatório errado e decisão errada. Uma escola de 30 alunos não pode valer o mesmo que uma de 800. <strong>O pipeline já entrega o cálculo certo, sempre</strong> — ninguém precisa lembrar disso na mão.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 7. CONCENTRAÇÃO ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Insight nº 1 — onde está o problema</p>
+            <h2>Metade das crianças não alfabetizadas está em apenas 3,5% dos municípios</h2>
+            <div class="chart-frame">
+                <img src="imagens/7.png" alt="Curva de concentração: 195 municípios concentram metade das crianças não alfabetizadas">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Ordenamos os municípios do maior déficit para o menor e fomos somando. A curva azul sobe muito rápido: <strong>195 municípios (3,5% do total) concentram metade de todas as crianças não alfabetizadas</strong> do país. Se o problema fosse espalhado por igual, a curva seguiria a linha pontilhada.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>O problema <strong>não está em todo lugar ao mesmo tempo</strong>. Um programa focado nesses 195 municípios alcança metade das crianças que precisam de ajuda — com uma fração do custo de uma ação nacional uniforme.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 8. POR ESTADO ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Insight nº 2 — o mapa por estado</p>
+            <h2>Um quarto do déficit nacional está no Rio Grande do Sul</h2>
+            <div class="chart-frame">
+                <img src="imagens/4.png" alt="Ranking de estados por número de crianças que faltam para a meta: RS lidera com 18.579">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Para cada estado, contamos quantas crianças faltaram para os municípios baterem a meta de 2024. O <strong>RS lidera com folga: 18.579 crianças</strong> — mais que o dobro do segundo colocado (SP, com 7.855). É provável que as enchentes de 2024 tenham pesado nesse resultado.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>O ranking que importa não é o da nota média, e sim o de <strong>quantas crianças faltam</strong> — ele mistura tamanho da rede e distância da meta. É esse número que dimensiona o esforço de recuperação em cada estado.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 9. ARMADILHA DOS RANKINGS ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Um alerta antes de sair fazendo rankings</p>
+            <h2>Município pequeno não tem taxa ruim — tem taxa incerta</h2>
+            <div class="chart-frame">
+                <img src="imagens/6.png" alt="Gráfico de funil: municípios com poucos alunos variam muito mais em torno da média nacional">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Cada ponto é um município. À esquerda estão os pequenos (poucos alunos avaliados); à direita, os grandes. Repare no formato de <strong>funil</strong>: com 20 alunos, a taxa balança demais — duas crianças a mais ou a menos mudam 10 pontos percentuais. Dentro do funil, a diferença para a média nacional pode ser só sorte ou azar.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>Listas de "melhores e piores municípios" quase sempre têm municípios minúsculos nas pontas — <strong>por acaso estatístico, não por mérito ou fracasso</strong>. Nosso pipeline entrega a margem de erro junto com a taxa, para ninguém premiar ou punir ruído.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 10. ONDE MORA A DIFERENÇA ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Insight nº 3 — onde mora a desigualdade</p>
+            <h2>A maior parte da diferença entre as crianças está dentro da própria escola</h2>
+            <div class="chart-frame">
+                <img src="imagens/3.png" alt="Decomposição da variação: 16% entre municípios, 9% entre escolas do mesmo município, 75% entre alunos da mesma escola">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Pegamos toda a variação de notas entre as crianças do Brasil e perguntamos: quanto vem da cidade onde ela mora? Da escola? Resposta: <strong>16% entre municípios, 9% entre escolas da mesma cidade — e 75% entre alunos da mesma sala</strong>.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>A meta é pactuada com o município, mas o município explica só 16% da história. <strong>Política pública que para no nível da cidade não alcança onde a diferença realmente acontece</strong>: dentro da escola, criança a criança.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 11. DENTRO DA MESMA CIDADE ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Insight nº 4 — o zoom nas escolas</p>
+            <h2>Na mesma cidade, há escolas 40 pontos acima e 40 pontos abaixo da média local</h2>
+            <div class="chart-frame duo">
+                <img src="imagens/10.png" alt="Distribuição do resíduo das escolas em relação ao próprio município: cerca de 2.000 escolas muito abaixo e 2.000 muito acima">
+                <img src="imagens/output.png" alt="Municípios com taxa média alta têm escolas mais parecidas entre si (correlação -0,38)">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>À esquerda: comparamos cada escola com a média <strong>da sua própria cidade</strong>. Cerca de <strong>2.000 escolas ficam muito abaixo do próprio contexto — e outras 2.000 o vencem</strong>, mesmo dividindo o mesmo bairro e a mesma renda. À direita: municípios que vão bem também são os mais <strong>homogêneos</strong> — as escolas deles andam juntas.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>Se o contexto fosse destino, escolas vizinhas teriam o mesmo resultado — e não têm. As escolas que vencem o próprio contexto mostram que <strong>gestão e prática pedagógica fazem diferença</strong>: são o lugar óbvio para ir aprender o que funciona e replicar na escola do lado.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 12. A OPORTUNIDADE ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Insight nº 5 — onde o esforço rende mais</p>
+            <h2>Dez pontos na prova valem quase 8 pontos percentuais na taxa nacional</h2>
+            <div class="chart-frame">
+                <img src="imagens/9.png" alt="Simulação: se as crianças até 10 pontos abaixo do corte cruzassem a linha, a taxa nacional iria de 59,2% para 67%">
+            </div>
+            <div class="cards two">
+                <div class="card">
+                    <h3>O que você está vendo</h3>
+                    <p>Lembra da "montanha" colada no corte? Aqui simulamos: se as crianças que estão até 10 pontos abaixo da linha cruzassem o corte, a taxa nacional saltaria de <strong>59,2% para 67%</strong>. São ganhos enormes com avanços pequenos, porque <strong>muita criança está quase lá</strong>.</p>
+                </div>
+                <div class="card highlight">
+                    <h3>Por que isso importa</h3>
+                    <p>Com o dado aberto por aluno, dá para ir além: <strong>modelos de IA podem apontar quais crianças estão no grupo "quase lá"</strong> e direcionar reforço cirúrgico para elas — o investimento com o maior retorno por real gasto de toda a análise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 13. FECHAMENTO ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Conclusão da apresentação</p>
+            <h2 style="margin-bottom:1.6rem;">Três decisões que os dados já sustentam hoje</h2>
+            <div class="cards three" style="margin-bottom:1.6rem;">
+                <div class="card">
+                    <div class="big-number">195<small>municípios concentram metade do déficit</small></div>
+                    <p><strong>Focar</strong> — um programa nos 3,5% de municípios certos alcança metade das crianças que precisam de ajuda.</p>
+                </div>
+                <div class="card">
+                    <div class="big-number">2.085<small>escolas vencem o próprio contexto</small></div>
+                    <p><strong>Aprender</strong> — identificar o que essas escolas fazem de diferente e replicar nas 2.008 que ficam abaixo do mesmo contexto.</p>
+                </div>
+                <div class="card">
+                    <div class="big-number">+7,8pp<small>com avanço de 10 pontos na prova</small></div>
+                    <p><strong>Antecipar</strong> — usar IA para encontrar as crianças "quase lá" e concentrar o reforço onde o retorno é maior.</p>
+                </div>
+            </div>
+            <ul class="plain">
+                <li>Nada disso exigiu dado novo: <strong>era tudo público</strong>. O que faltava era engenharia — coletar, limpar, validar contra o número oficial e organizar para a pergunta de negócio.</li>
+                <li>O pipeline roda de ponta a ponta na nuvem por <strong>centavos por execução</strong>, e está pronto para receber os próximos ciclos do SAEB e alimentar dashboards e modelos.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- ============ 14. RESUMO TÉCNICO ============ -->
+    <div class="slide">
+        <div class="slide-inner">
+            <p class="kicker">Para se aprofundar na parte técnica</p>
+            <h2>E quanto custa manter tudo isso no ar?</h2>
+            <p class="subtitle">Infraestrutura 100% em código (Terraform) na AWS: ingestão do BigQuery, três camadas no S3, orquestração com Step Functions e consulta em SQL via Athena.</p>
+            <div class="card highlight" style="text-align:center; padding:2rem; margin-bottom:1.4rem;">
+                <div class="big-number" style="font-size:4.2rem;">&lt; US$ 0,20 / mês</div>
+                <p style="font-size:1.15rem;">Custo total da operação em regime, com carga semanal. <strong>Menos que um cafezinho por mês.</strong></p>
+            </div>
+            <div class="cards three">
+                <div class="card">
+                    <div class="big-number">US$ 0,03<small>por execução completa</small></div>
+                    <p>Bronze + Silver + Gold em ~4 minutos.</p>
+                </div>
+                <div class="card">
+                    <div class="big-number">US$ 0,01<small>de armazenamento / mês</small></div>
+                    <p>As três camadas inteiras no S3.</p>
+                </div>
+                <div class="card">
+                    <div class="big-number">US$ 0,88/h<small>streaming — só quando ligado</small></div>
+                    <p>O único item caro: liga para a demo (~US$ 0,45) e é desligado via script.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ 15. AGRADECIMENTO ============ -->
+    <div class="slide">
+        <div class="slide-inner" style="text-align:center;">
+            <p class="kicker">Fim da apresentação</p>
+            <h1 style="margin-bottom:1rem;">Obrigada pela atenção!</h1>
+            <p class="lead" style="max-width:44rem; margin:0 auto 3rem;">Todo o código, a documentação e as análises desta apresentação estão abertos no GitHub.</p>
+            <a href="https://github.com/tuanyfortunato/pipeline-dados-alfabetiza-brasil" target="_blank"
+               style="display:inline-flex; align-items:center; gap:.8rem; background:var(--surface); border:1px solid var(--accent-strong); border-radius:12px; padding:1.1rem 1.8rem; color:var(--accent); font-size:1.25rem; text-decoration:none;">
+                <svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+                github.com/tuanyfortunato/pipeline-dados-alfabetiza-brasil
+            </a>
+            <div style="margin-top:3rem;">
+                <p style="font-size:.8rem; text-transform:uppercase; letter-spacing:.15em; color:var(--muted);">Tech Challenge · AI Scientist</p>
+                <p style="font-size:1.4rem; font-weight:600;">Tuany Fortunato do Carmo</p>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Controles -->
+<div class="controls">
+    <button onclick="prevSlide()">← Anterior</button>
+    <span id="counter"></span>
+    <button class="primary" onclick="nextSlide()">Próximo →</button>
+</div>
+
+<script>
+    let current = 0;
+    const slides = document.querySelectorAll('.slide');
+    const counter = document.getElementById('counter');
+    const progress = document.getElementById('progress');
+
+    function update() {
+        slides.forEach((s, i) => s.classList.toggle('active', i === current));
+        counter.textContent = (current + 1) + ' / ' + slides.length;
+        progress.style.width = ((current + 1) / slides.length * 100) + '%';
+    }
+
+    function nextSlide() { if (current < slides.length - 1) { current++; update(); } }
+    function prevSlide() { if (current > 0) { current--; update(); } }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+        if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+        if (e.key === 'Home') { current = 0; update(); }
+        if (e.key === 'End') { current = slides.length - 1; update(); }
+    });
+
+    update();
+</script>
+
+</body>
+</html>

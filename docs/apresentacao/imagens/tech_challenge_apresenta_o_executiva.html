@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full w-full bg-slate-950">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tech Challenge | Apresentação Executiva</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .slide { display: none; height: 100vh; width: 100vw; flex-direction: column; justify-content: center; padding: 4rem; opacity: 0; transition: opacity 0.5s; }
+        .slide.active { display: flex; opacity: 1; }
+        body { margin: 0; overflow: hidden; background-color: #020617; color: white; font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body>
+
+    <div id="slides-container" class="relative w-full h-full">
+        <!-- Slide 1: Capa -->
+        <div class="slide active">
+            <h1 class="text-6xl font-bold mb-6 text-sky-400">Pipeline Híbrido: Análise da Alfabetização</h1>
+            <p class="text-2xl text-slate-300 max-w-2xl mb-12">Transformando dados públicos em evidências para o Compromisso Nacional Criança Alfabetizada 2030.</p>
+            <div class="border-l-4 border-sky-600 pl-6">
+                <p class="text-sm uppercase tracking-widest text-slate-500">Apresentado por</p>
+                <p class="text-3xl font-semibold text-white">Tuany Fortunato do Carmo</p>
+            </div>
+        </div>
+
+        <!-- Slide 2: Contexto -->
+        <div class="slide">
+            <h2 class="text-4xl font-bold mb-8 text-sky-400">O Problema de Negócio</h2>
+            <div class="max-w-4xl grid md:grid-cols-2 gap-8 text-slate-300">
+                <p class="text-lg">O Compromisso Nacional Criança Alfabetizada exige 100% de alfabetização até o 2º ano do fundamental. O desafio não é apenas pedagógico, mas de engenharia de dados.</p>
+                <div class="bg-slate-900 p-6 rounded-xl border border-slate-700">
+                    <h3 class="text-sky-300 font-bold mb-2">A Meta</h3>
+                    <p>743 pontos no SAEB é o ponto de corte.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 3: Arquitetura (Inserir seu desenho aqui) -->
+        <div class="slide">
+            <h2 class="text-4xl font-bold mb-8 text-sky-400">Arquitetura Medalhão</h2>
+            <div class="bg-white p-4 rounded-lg shadow-xl w-full max-w-3xl">
+                <!-- Substitua pelo seu diagrama de arquitetura -->
+                <div class="h-64 bg-slate-200 flex items-center justify-center text-slate-600 italic">
+                    [Diagrama de Arquitetura: Bronze -> Silver -> Gold]
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 4: Validação (Gráfico 7 e 2) -->
+        <div class="slide">
+            <h2 class="text-4xl font-bold mb-8 text-sky-400">Validação da Solução</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <img src="7.png" alt="Validação INEP" class="rounded border border-slate-700 w-full object-contain bg-white">
+                <img src="2.png" alt="Média Ponderada" class="rounded border border-slate-700 w-full object-contain bg-white">
+            </div>
+        </div>
+
+        <!-- Slide 5: Insights de Concentração (Gráfico 6 e 4) -->
+        <div class="slide">
+            <h2 class="text-4xl font-bold mb-8 text-sky-400">Onde o esforço rende mais?</h2>
+            <div class="flex gap-4">
+                <img src="6.png" alt="Concentração de Deficit" class="w-1/2 rounded bg-white">
+                <img src="4.png" alt="Estados com maior déficit" class="w-1/2 rounded bg-white">
+            </div>
+        </div>
+
+        <!-- Slide 6: Complexidade Escolar (Gráfico 9 e 10) -->
+        <div class="slide">
+            <h2 class="text-4xl font-bold mb-8 text-sky-400">Desigualdades Intra-Municipais</h2>
+            <div class="flex gap-4">
+                <img src="9.png" alt="Resíduo Escolas" class="w-1/2 rounded bg-white">
+                <img src="10.png" alt="Homogeneidade" class="w-1/2 rounded bg-white">
+            </div>
+        </div>
+
+        <!-- Slide 7: Oportunidade IA (Gráfico 8) -->
+        <div class="slide">
+            <h2 class="text-4xl font-bold mb-8 text-sky-400">Potencial para IA & Decisão</h2>
+            <img src="8.png" alt="Oportunidade 10 pontos" class="max-h-[500px] rounded bg-white p-2">
+            <p class="mt-6 text-xl text-slate-300">IA permite identificar alunos "quase lá" para intervenções cirúrgicas.</p>
+        </div>
+    </div>
+
+    <!-- Controles -->
+    <div class="fixed bottom-0 w-full p-6 flex justify-between bg-slate-950">
+        <button onclick="prevSlide()" class="px-6 py-2 bg-slate-800 rounded">Anterior</button>
+        <button onclick="nextSlide()" class="px-6 py-2 bg-sky-600 rounded">Próximo</button>
+    </div>
+
+    <script>
+        let current = 0;
+        const slides = document.querySelectorAll('.slide');
+        
+        function update() {
+            slides.forEach((s, i) => s.classList.toggle('active', i === current));
+        }
+        
+        function nextSlide() { if(current < slides.length - 1) { current++; update(); } }
+        function prevSlide() { if(current > 0) { current--; update(); } }
+
+        document.addEventListener('keydown', (e) => {
+            if(e.key === 'ArrowRight') nextSlide();
+            if(e.key === 'ArrowLeft') prevSlide();
+        });
+    </script>
+</body>
+</html>
